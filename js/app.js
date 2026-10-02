@@ -678,7 +678,7 @@ function computeSales(month,mode){
     if(t.recGoal) parts.push([45,Math.min(t.recPct/(ep*100),1)]);
     if(t.otGoal) parts.push([35,Math.min(t.otPct/(ep*100),1)]);
     t.earlyRate=hasQ&&t.rec?t.early/t.rec:null;
-    t.quality=hasQ&&parts.length?(t.early===0?1:t.rec?Math.min(1,branchEarly/(t.early/t.rec)):0):null;
+    t.quality=hasQ&&parts.length&&t.rec?(t.early===0?1:Math.min(1,branchEarly/(t.early/t.rec))):null; // quality points only once they've sold something
     if(t.quality!=null) parts.push([20,t.quality]);
     t.score=parts.length&&(t.recGoal||t.otGoal)?Math.round(100*parts.reduce((a,[w,v])=>a+w*v,0)/parts.reduce((a,[w])=>a+w,0)):null;
     t.scoreParts=parts;
