@@ -36,14 +36,14 @@ const SORTS={
   sales:[
     {key:'proj',label:'Overall',dir:-1},
     {key:'score',label:'Sales score',dir:-1},
-    {key:'goalPct',label:'Captured % of budget',dir:-1},
+    {key:'goalPct',label:'Total % of budget',dir:-1},
     {key:'recPct',label:'Recurring % of budget',dir:-1},
-    {key:'otPct',label:'One-time % of budget',dir:-1},
+    {key:'otPct',label:'One-time & initial % of budget',dir:-1},
     {key:'recAmt',label:'Recurring',dir:-1},
-    {key:'otRev',label:'One-time $',dir:-1},
+    {key:'otAll',label:'One-time & initial $',dir:-1},
   ],
 };
-const PCT=['loss','comp','cancelPct','cancelRate','cancelShare','voidRate','pace','goalPct','recPct','otPct'], MONEY=['proj','overall','recVal','otRev','prod','leadVal','stopsProd'];
+const PCT=['loss','comp','cancelPct','cancelRate','cancelShare','voidRate','pace','goalPct','recPct','otPct'], MONEY=['proj','overall','recVal','otRev','otAll','prod','leadVal','stopsProd'];
 
 const state={months:{},bases:{},locnames:{},roster:{employees:null,codes:{},termedSeen:{},show:{}},month:null,mode:'month',sec:'route',
   sort:{route:'health',sales:'proj'},cx:{view:'pct',who:''},db:null,canEdit:null,local:false,pending:[],arm:null};
@@ -435,13 +435,14 @@ function renderYTD(c){
   } else if(sec==='sales'){
     const S=computeSales(ytdEnd(),'ytd'); if(!S){ c.innerHTML=`<div class="empty"><h2>No sales details for ${esc(periodLabel())}</h2></div>`; return; }
     const B=S.B, isVal=S.unit!=='accounts';
-    parts.push(kpiStrip([...(S.hasGoals?[['Captured vs. budget',B.goalPct!=null?pct1(B.goalPct):'—',`${money(B.captured)} of ${money(B.budget)} · ${S.budMonths.length} budgeted month${S.budMonths.length===1?'':'s'}`,B.goalPct!=null?`<span class="pb ${B.goalPct>=S.exp*100?'ok':'no'}">${B.goalPct>=S.exp*100?'ON PACE':'OFF PACE'}</span>`:'']]:[]),
-      ['Recurring sold',money(B.recVal),`${B.rec} setups`],['One-time sold',money(B.otRev),`${B.ot} jobs`],
+    parts.push(kpiStrip([...dorTile(S.dor),...(S.hasGoals?[['Salespeople vs. budget',B.goalPct!=null?pct1(B.goalPct):'—',`${money(B.captured)} of ${money(B.budget)} · ${S.budMonths.length} budgeted month${S.budMonths.length===1?'':'s'}`,B.goalPct!=null?`<span class="pb ${B.goalPct>=S.exp*100?'ok':'no'}">${B.goalPct>=S.exp*100?'ON PACE':'OFF PACE'}</span>`:'']]:[]),
+      ['Recurring sold',money(B.recVal),`${B.rec} setups`],['One-time & initial sold',money(B.otAll),`${B.ot} jobs + ${money(B.ex)} excess initial`],
       ...(S.cancels!=null?[['Net setups',fmt('netGain',B.rec-S.cancels),`${B.rec} added · ${S.cancels} cancelled`]]:[])],'sales'));
     parts.push(`<p class="periodline">${esc(periodLabel())} · branch only</p>`);
     const ms=goalMonths(ytdEnd(),'ytd').filter(m=>state.months[m]?.sales);
-    const byM=m=>Object.values(state.months[m].sales).reduce((a,v)=>({rec:a.rec+(v.rec||0),recVal:a.recVal+(v.recVal||0),ot:a.ot+(v.ot||0),otRev:a.otRev+(v.otRev||0)}),{rec:0,recVal:0,ot:0,otRev:0});
-    parts.push(`<h3>By month</h3>`+rowsTable(['Month','Recurring','Recurring $/yr','One-time','One-time $'],ms.map(m=>{const x=byM(m);return [monthName(m,true),x.rec,money(x.recVal),x.ot,money(x.otRev)];})));
+    const byM=m=>Object.values(state.months[m].sales).reduce((a,v)=>({rec:a.rec+(v.rec||0),recVal:a.recVal+(v.recVal||0),ot:a.ot+(v.ot||0),otRev:a.otRev+(v.otRev||0)+(v.ex||0)}),{rec:0,recVal:0,ot:0,otRev:0});
+    parts.push(dorHTML(S.dor));
+    parts.push(`<h3>By month</h3>`+rowsTable(['Month','Recurring','Recurring $/yr','One-time','One-time & initial $'],ms.map(m=>{const x=byM(m);return [monthName(m,true),x.rec,money(x.recVal),x.ot,money(x.otRev)];})));
     parts.push((branchBody('sales')||[]).join(''));
   } else {
     const B=R.B;
@@ -486,8 +487,9 @@ function branchBody(sec){
   const body=[]; const ytd=state.mode==='ytd';
   if(sec==='sales'){
     const S=computeSales(curMonth(),state.mode); if(!S) return; const B=S.B, isVal=S.unit!=='accounts';
-    body.push(`<h3>Sales</h3>`+rowsTable(['','Count','Value'],[['Recurring sales',B.rec,money(B.recVal)+' / yr'],['One-time sales',B.ot,money(B.otRev)]]));
-    if(S.hasGoals) body.push(`<h3>Captured vs. budget</h3><p class="sub">${money(B.captured)} captured of ${money(B.budget)} budgeted (${pct1(B.goalPct)}), combining everyone with a budget${state.mode==='ytd'?` across the ${S.budMonths.length} budgeted month${S.budMonths.length===1?'':'s'}`:''}.</p><span class="goals" style="display:grid">${goalBar('Recurring',B.gRec,B.recGoal,B.recPct,S.exp,isVal)}${goalBar('One-time',B.gOt,B.otGoal,B.otPct,S.exp,true)}</span>`);
+    body.push(`<h3>Sales</h3>`+rowsTable(['','Count','Value'],[['Recurring sales',B.rec,money(B.recVal)+' / yr'],['One-time sales',B.ot,money(B.otRev)],['Excess initial on recurring setups','',money(B.ex)],['<b>Total captured</b>','',`<b>${money(B.overall)}</b>`]]));
+    if(!ytd&&S.dor) body.push(dorHTML(S.dor));
+    if(S.hasGoals) body.push(`<h3>Salespeople vs. budget</h3><p class="sub">${money(B.captured)} captured of ${money(B.budget)} budgeted (${pct1(B.goalPct)}), combining everyone with a budget${state.mode==='ytd'?` across the ${S.budMonths.length} budgeted month${S.budMonths.length===1?'':'s'}`:''}.</p><span class="goals" style="display:grid">${goalBar('Recurring',B.gRec,B.recGoal,B.recPct,S.exp,isVal)}${goalBar('One-time',B.gOt,B.otGoal,B.otPct,S.exp,true)}</span>`);
     if(S.cancels!=null) body.push(`<h3>Net change in setups</h3><p>${B.rec} recurring added − ${S.cancels} cancelled = <b>${fmt('netGain',B.rec-S.cancels)}</b></p>`);
     if(B.early) body.push(`<h3>Sale quality</h3><p class="sub">${B.early} first-year cancellations (chargebacks) on ${B.rec} recurring sales. This feeds the sale-quality part of the sales score only; it isn’t subtracted from captured sales.</p>`);
     const names=l=>l.map(t=>`<button type="button" class="linkish" data-sp="${esc(t.id)}">${esc(t.display)}</button>`).join(', ');
@@ -637,7 +639,21 @@ function salesStatus(r){
   if(r.emp) return 'staff';
   return state.roster.termedSeen?.[r.key]?'termed':'outside';
 }
-function sblank(id,display,status,emp){ return {id,display,status,emp,rec:0,recVal:0,recTotal:0,ot:0,otRev:0,early:0,spc:0,byM:{}}; }
+function sblank(id,display,status,emp){ return {id,display,status,emp,rec:0,recVal:0,recTotal:0,ot:0,otRev:0,ex:0,early:0,spc:0,byM:{}}; }
+// Branch sales against the Power BI DOR budget, for the months that budget covers
+function dorCompare(month,mode){
+  const D=state.roster.dor||{}, e=mode==='month'?D[month]:D.ytd;
+  if(!e) return null;
+  const cap={total:0,rec:0,ot:0}, byClass={};
+  for(const m of e.months){ const d=state.months[m]; if(!d) continue;
+    if(d.salesClass) for(const [c,v] of Object.entries(d.salesClass)){ cap.total+=v.total; cap.rec+=v.rec; cap.ot+=v.ot+v.ex; const b=byClass[c]||(byClass[c]={cap:0}); b.cap+=v.total; }
+    else if(d.sales) for(const v of Object.values(d.sales)){ cap.rec+=v.recVal||0; cap.ot+=(v.otRev||0)+(v.ex||0); cap.total+=(v.recVal||0)+(v.otRev||0)+(v.ex||0); } }
+  for(const [c,b] of Object.entries(e.byClass||{})){ const x=byClass[c]||(byClass[c]={cap:0}); x.budget=b.budget; }
+  const exp=avg(e.months.map(expectedFor))??1;
+  return {months:e.months,file:e.file,budget:e.total.budget,recBudget:e.total.recBudget,otBudget:e.total.otBudget,cap,byClass,exp,
+    pct:e.total.budget?cap.total/e.total.budget*100:null,recPct:e.total.recBudget?cap.rec/e.total.recBudget*100:null,otPct:e.total.otBudget?cap.ot/e.total.otBudget*100:null,
+    needsResync:e.months.some(m=>state.months[m]?.sales&&!state.months[m].salesClass)};
+}
 /* ---------- monthly sales budgets ---------- */
 // roster.budgets = { 'YYYY-MM': { personId: { name, rec, ot } } }  (dollars; recurring = annual value)
 function budgetFor(id,m){ return state.roster.budgets?.[m]?.[id]||null; }
@@ -652,9 +668,9 @@ function computeSales(month,mode){
     for(const [k,v] of Object.entries(state.months[m].sales)){
       const r=resolveKey(k), st=salesStatus(r);
       const t=P[r.id]||(P[r.id]=sblank(r.id,r.display,st,r.emp));
-      const bm=t.byM[m]||(t.byM[m]={rec:0,recVal:0,ot:0,otRev:0});
-      for(const f of ['rec','recVal','recTotal','ot','otRev']) t[f]+=v[f]||0;
-      for(const f of ['rec','recVal','ot','otRev']) bm[f]+=v[f]||0;
+      const bm=t.byM[m]||(t.byM[m]={rec:0,recVal:0,ot:0,otRev:0,ex:0});
+      for(const f of ['rec','recVal','recTotal','ot','otRev','ex']) t[f]+=v[f]||0;
+      for(const f of ['rec','recVal','ot','otRev','ex']) bm[f]+=v[f]||0;
     }
   }
   // Sale quality (chargebacks): first-year cancels on each salesperson's accounts. Used only in the sales score;
@@ -670,28 +686,31 @@ function computeSales(month,mode){
   const derive=t=>{
     t.recAmt=t.recVal;
     let rg=0,og=0,rc=0,oc=0;
-    for(const m of gm){ const b=budgetFor(t.id,m); if(!b) continue; const a=t.byM[m]||{recVal:0,otRev:0};
-      if(b.rec){ rg+=b.rec; rc+=a.recVal; } if(b.ot){ og+=b.ot; oc+=a.otRev; } }
+    for(const m of gm){ const b=budgetFor(t.id,m); if(!b) continue; const a=t.byM[m]||{recVal:0,otRev:0,ex:0};
+      if(b.rec){ rg+=b.rec; rc+=a.recVal; } if(b.ot){ og+=b.ot; oc+=a.otRev+(a.ex||0); } }
     t.recGoal=rg||null; t.otGoal=og||null; t.recCap=rc; t.otCap=oc;
     t.recPct=t.recGoal?rc/rg*100:null; t.otPct=t.otGoal?oc/og*100:null;
     t.budget=(rg+og)||null; t.captured=rc+oc;
     t.goalPct=t.budget?t.captured/t.budget*100:null;
     // Overall = recurring annual value + one-time sales; in a month still under way, projected to month end at the current pace
-    t.overall=(t.recVal||0)+(t.otRev||0);
+    t.otAll=(t.otRev||0)+(t.ex||0); // one-time + excess initial, as the DOR groups them
+    t.overall=(t.recVal||0)+t.otAll;
     t.proj=mode==='month'&&exp>0&&exp<1?t.overall/exp:t.overall;
   };
   const all=Object.values(P); all.forEach(derive);
   const B=sblank('branch','Branch total','branch',null);
-  for(const t of all) for(const f of ['rec','recVal','recTotal','ot','otRev','early','spc']) B[f]+=t[f];
-  // Sales score: 45 pts recurring vs budget pace, 35 pts one-time vs budget pace, 20 pts sale quality (first-year cancels vs branch rate)
+  for(const t of all) for(const f of ['rec','recVal','recTotal','ot','otRev','ex','early','spc']) B[f]+=t[f];
+  B.otAll=B.otRev+B.ex;
+  // Sales score (100): 40 total dollars vs budget, 25 recurring vs budget, 20 one-time & initial vs budget (all against pace), 15 sale quality
   const branchEarly=B.rec?B.early/B.rec:0, ep=Math.max(exp,0.01);
   for(const t of all){
     const parts=[];
-    if(t.recGoal) parts.push([45,Math.min(t.recPct/(ep*100),1)]);
-    if(t.otGoal) parts.push([35,Math.min(t.otPct/(ep*100),1)]);
+    if(t.budget) parts.push([40,Math.min(t.goalPct/(ep*100),1)]);
+    if(t.recGoal) parts.push([25,Math.min(t.recPct/(ep*100),1)]);
+    if(t.otGoal) parts.push([20,Math.min(t.otPct/(ep*100),1)]);
     t.earlyRate=hasQ&&t.rec?t.early/t.rec:null;
     t.quality=hasQ&&parts.length&&t.rec?(t.early===0?1:Math.min(1,branchEarly/(t.early/t.rec))):null; // quality points only once they've sold something
-    if(t.quality!=null) parts.push([20,t.quality]);
+    if(t.quality!=null) parts.push([15,t.quality]);
     t.score=parts.length&&(t.recGoal||t.otGoal)?Math.round(100*parts.reduce((a,[w,v])=>a+w*v,0)/parts.reduce((a,[w])=>a+w,0)):null;
     t.scoreParts=parts;
   }
@@ -701,10 +720,28 @@ function computeSales(month,mode){
   B.gRec=all.reduce((a,t)=>a+(t.recGoal?t.recCap:0),0); B.gOt=all.reduce((a,t)=>a+(t.otGoal?t.otCap:0),0);
   B.recPct=B.recGoal?B.gRec/B.recGoal*100:null; B.otPct=B.otGoal?B.gOt/B.otGoal*100:null;
   B.budget=(B.recGoal||0)+(B.otGoal||0)||null; B.captured=B.gRec+B.gOt; B.goalPct=B.budget?B.captured/B.budget*100:null;
-  B.overall=B.recVal+B.otRev; B.proj=mode==='month'&&exp>0&&exp<1?B.overall/exp:B.overall;
+  B.overall=B.recVal+B.otAll; B.proj=mode==='month'&&exp>0&&exp<1?B.overall/exp:B.overall;
   const cancels=null; // cancellations belong to the route views, not sales
   const by=s=>all.filter(t=>t.status===s);
-  return {board:by('board'),termed:by('termed'),outside:by('outside'),staff:by('staff'),main:by('main'),other:by('other'),B,exp,n:gm.length,budMonths,unit:'value',stale,cancels,hasGoals:budMonths.length>0};
+  return {board:by('board'),termed:by('termed'),outside:by('outside'),staff:by('staff'),main:by('main'),other:by('other'),B,exp,n:gm.length,budMonths,unit:'value',stale,cancels,hasGoals:budMonths.length>0,dor:dorCompare(month,mode)};
+}
+function dorTile(D){
+  if(!D||D.pct==null) return [];
+  const span=D.months.length===1?monthName(D.months[0],true):`${monthName(D.months[0],true)}–${monthName(D.months[D.months.length-1],true)}`;
+  const ok=D.pct>=D.exp*100, done=D.exp>=1;
+  return [['Branch vs. DOR budget',pct1(D.pct),`${money(D.cap.total)} of ${money(D.budget)} · ${span}`,`<span class="pb ${ok?'ok':'no'}">${done?(D.pct>=100?'BUDGET MET':'BUDGET MISSED'):(ok?'ON PACE':'OFF PACE')}</span>`]];
+}
+function dorHTML(D){
+  if(!D) return '';
+  const span=D.months.length===1?monthName(D.months[0]):`${monthName(D.months[0])} – ${monthName(D.months[D.months.length-1])}`;
+  const rows=Object.entries(D.byClass).filter(([c,v])=>(v.budget||0)>0||(v.cap||0)>0).sort((a,b)=>(b[1].budget||0)-(a[1].budget||0))
+    .map(([c,v])=>[esc(c),money(v.cap),money(v.budget||0),v.budget?pct1(v.cap/v.budget*100):'—']);
+  rows.push(['<b>Total</b>',`<b>${money(D.cap.total)}</b>`,`<b>${money(D.budget)}</b>`,`<b>${pct1(D.pct)}</b>`]);
+  return `<h3>Branch vs. DOR sales budget</h3>
+    <p class="sub">${esc(span)}, from ${esc(D.file||'the DOR export')}. Captured is total sales from the Sales Details report (recurring annual value + one-time + excess initial), the same way the DOR adds it up.</p>
+    ${rowsTable(['Service class','Captured','Budget','%'],rows)}
+    ${rowsTable(['','Captured','Budget','%'],[['Recurring',money(D.cap.rec),money(D.recBudget),D.recPct!=null?pct1(D.recPct):'—'],['One-time & initial',money(D.cap.ot),money(D.otBudget),D.otPct!=null?pct1(D.otPct):'—']])}
+    ${D.needsResync?'<p class="sub" style="color:var(--low)">Re-upload the Sales Details export so excess initial and service-class totals are included for every month.</p>':''}`;
 }
 function goalBand(pct,exp){ if(pct==null) return 'c-none'; const r=exp>0?pct/(exp*100):1; return r>=1?'c-good':r>=0.8?'c-mid':'c-low'; }
 function goalBar(label,amt,goal,pctV,exp,isMoney){
@@ -722,7 +759,7 @@ function renderSales(c){
   const sorts=SORTS.sales.map(x=>x.key==='recAmt'?{...x,label:isVal?'Recurring annual $':'Recurring accounts'}:x.key==='proj'?{...x,label:projecting?'Overall (projected)':'Overall'}:x)
     .filter(x=>S.board.some(t=>t[x.key]!=null)&&(S.hasGoals||!/Pct$/.test(x.key)));
   const sk=sorts.some(x=>x.key===state.sort.sales)?state.sort.sales:(sorts[0]?.key||'recAmt');
-  const bits=[`<span class="fig">${B.rec}</span> recurring sales worth ${money(B.recVal)} a year`,`<span class="fig">${money(B.otRev)}</span> in one-time sales`];
+  const bits=[`<span class="fig">${B.rec}</span> recurring sales worth ${money(B.recVal)} a year`,`<span class="fig">${money(B.otAll)}</span> in one-time & initial sales`];
   const net=S.cancels!=null?` Net change in setups: <span class="fig">${B.rec-S.cancels>0?'+':''}${B.rec-S.cancels}</span> (${B.rec} added, ${S.cancels} cancelled).`:'';
   const names=l=>l.map(t=>`<button type="button" class="linkish" data-sp="${esc(t.id)}">${esc(t.display)}</button>`).join(', ');
   const parts=[];
@@ -736,18 +773,19 @@ function renderSales(c){
   c.innerHTML=`
     ${S.stale?'<p class="banner" style="border-radius:8px">Some months were uploaded before sales were credited to salespeople. Re-upload the sales details export to fix them.</p>':''}
     ${kpiStrip([
-      ...(S.hasGoals?[['Captured vs. budget',B.goalPct!=null?pct1(B.goalPct):'—',`${money(B.captured)} of ${money(B.budget)} budgeted`,B.goalPct!=null?`<span class="pb ${B.goalPct>=S.exp*100?'ok':'no'}">${S.exp>=1?(B.goalPct>=100?'BUDGET MET':'BUDGET MISSED'):(B.goalPct>=S.exp*100?'ON PACE':'OFF PACE')}</span>`:'']]:[]),
+      ...dorTile(S.dor),
+      ...(S.hasGoals?[['Salespeople vs. budget',B.goalPct!=null?pct1(B.goalPct):'—',`${money(B.captured)} of ${money(B.budget)} budgeted`,B.goalPct!=null?`<span class="pb ${B.goalPct>=S.exp*100?'ok':'no'}">${S.exp>=1?(B.goalPct>=100?'BUDGET MET':'BUDGET MISSED'):(B.goalPct>=S.exp*100?'ON PACE':'OFF PACE')}</span>`:'']]:[]),
       ['Recurring sold',money(B.recVal),`${B.rec} setups${B.recPct!=null?` · ${pct1(B.recPct)} of budget`:''}`],
-      ['One-time sold',money(B.otRev),`${B.ot} jobs${B.otPct!=null?` · ${pct1(B.otPct)} of budget`:''}`],
+      ['One-time & initial',money(B.otAll),`${B.ot} jobs + initial${B.otPct!=null?` · ${pct1(B.otPct)} of budget`:''}`],
       ...(S.cancels!=null?[['Net setups',fmt('netGain',B.rec-S.cancels),`${B.rec} added · ${S.cancels} cancelled`]]:[])],'sales')}
     ${S.hasGoals&&B.goalPct!=null?bill(B.goalPct>=S.exp*100?`The sales team has captured ${pct1(B.goalPct)} of budget, right where it should be by now. Keep stacking setups.`:`The sales team has captured ${pct1(B.goalPct)} of budget; about ${pct1(S.exp*100)} would be on pace by today.`):''}
     <p class="periodline">${esc(periodLabel())} · credit goes to the salesperson on each sale${S.exp<1?' · the black mark on each bar is where they should be today':''}</p>
-    ${sk==='score'?'<p class="hint">Sales score out of 100: 45 points for recurring dollars captured against budget, 35 for one-time dollars captured against budget (both measured against where they should be by today), and 20 for sale quality: keeping first-year cancellations (chargebacks) on their sales at or below the branch rate. Cancellations are never subtracted from captured sales.</p>':''}
+    ${sk==='score'?'<p class="hint">Sales score out of 100: 40 points for total dollars captured against budget (recurring, one-time and initial combined), 25 for recurring against budget, 20 for one-time & initial against budget (all measured against where they should be by today), and 15 for sale quality: keeping first-year cancellations (chargebacks) at or below the branch rate. Cancellations are never subtracted from captured sales.</p>':''}
     <div class="toolrow">${goalsBtn}${!S.hasGoals?'<span class="sub">No budget for this month yet. Add one to track captured sales against budgeted dollars.</span>':''}</div>
     <nav class="tabs" aria-label="Rank by">${sorts.map(x=>`<button type="button" data-sort="${x.key}" aria-pressed="${x.key===sk}">${x.label}</button>`).join('')}</nav>
     ${sk==='proj'?`<p class="hint">Overall is recurring annual value plus one-time sales${projecting?`, projected to month end at the current pace (${pct1(S.exp*100)} of the month’s workdays are done)`:''}. Ranked best to worst.</p>`:''}
     <button type="button" class="branch" data-branch="sales"><span class="who"><span class="name">Branch total</span>
-      <span class="chips"><span><b>${B.rec}</b> recurring</span><span><b>${money(B.recVal)}</b>/yr</span><span><b>${money(B.otRev)}</b> one-time</span></span></span>
+      <span class="chips"><span><b>${B.rec}</b> recurring</span><span><b>${money(B.recVal)}</b>/yr</span><span><b>${money(B.otAll)}</b> one-time & initial</span></span></span>
       <span class="score">${sk==='proj'?`<span class="num">${money(B.proj)}</span>`:''}<span class="more">Details ›</span></span></button>
     <ol class="board">${rows.map((t,i)=>{
       const big=sk==='score'?(t.score??'—'):fmt(sk,t[sk]);
@@ -755,7 +793,7 @@ function renderSales(c){
         <span class="rank">${t[sk]==null?'–':i+1}</span>
         <span class="who"><span class="name">${esc(t.display)}</span><span class="chips">${sk==='proj'&&projecting?`<span><b>${money(t.overall)}</b> so far</span>`:''}${sk!=='score'&&t.score!=null?`<span>score <b>${t.score}</b></span>`:''}<span><b>${t.rec}</b> recurring</span><span><b>${money(t.recVal)}</b>/yr</span><span><b>${t.ot}</b> one-time</span>${t.earlyRate!=null?`<span><b>${t.early}</b> first-year cancels</span>`:''}</span></span>
         <span class="score"><span class="num">${big}</span></span>
-        <span class="goals">${goalBar('Recurring',t.recGoal?t.recCap:t.recAmt,t.recGoal,t.recPct,S.exp,true)}${goalBar('One-time',t.otGoal?t.otCap:t.otRev,t.otGoal,t.otPct,S.exp,true)}</span></button></li>`;
+        <span class="goals">${goalBar('Total',t.budget?t.captured:t.overall,t.budget,t.goalPct,S.exp,true)}${goalBar('Recurring',t.recGoal?t.recCap:t.recAmt,t.recGoal,t.recPct,S.exp,true)}${goalBar('One-time & initial',t.otGoal?t.otCap:t.otAll,t.otGoal,t.otPct,S.exp,true)}</span></button></li>`;
     }).join('')}</ol>${sourcesBlock()}`;
   c.querySelectorAll('[data-sort]').forEach(b=>b.onclick=()=>{state.sort.sales=b.dataset.sort;render();});
 }
@@ -767,13 +805,13 @@ function openSales(id){
   const pc=(a,b)=>b?pct1(a/b*100):'—';
   $('#techTitle').innerHTML=esc(t.display)+(t.status==='board'?'':`<span class="statusTag">${{main:'Main branch',staff:'No budget',outside:'Not on Tucson list',termed:'Termed',other:'Other'}[t.status]}</span>`);
   const P=computeSales(curMonth(),state.mode); const x=P&&[...P.board,...P.termed,...P.outside,...P.staff,...P.main,...P.other].find(y=>y.id===id);
-  const lbl=['Recurring vs budget','One-time vs budget','Sale quality'], ws=[45,35,20];
+  const lbl=['Total dollars vs budget','Recurring vs budget','One-time & initial vs budget','Sale quality'], ws=[40,25,20,15];
   $('#techBody').innerHTML=`
     ${x&&x.score!=null?`<div class="big ${x.score>=80?'c-good':x.score>=60?'c-mid':'c-low'}"><span class="num">${x.score}</span><span class="lab">sales score, ${esc(periodLabel())}</span></div>
       <p class="sub">${x.scoreParts.map(([w,v])=>`${lbl[ws.indexOf(w)]}: ${Math.round(w*v)} of ${w}`).join(' · ')}${x.earlyRate!=null?` · ${x.early} first-year cancels on ${x.rec} recurring sales`:''}</p>`:''}
     <h3>Captured vs. budget by month</h3>
-    <div class="tbl"><table><thead><tr><th>Month</th><th>Recurring captured</th><th>%</th><th>One-time captured</th><th>%</th><th>Total</th><th>%</th></tr></thead><tbody>
-    ${ms.map(m=>{ const a=t.byM[m]||{rec:0,recVal:0,ot:0,otRev:0}, b=budgetFor(id,m)||{}; const tb=(b.rec||0)+(b.ot||0);
+    <div class="tbl"><table><thead><tr><th>Month</th><th>Recurring captured</th><th>%</th><th>One-time & initial</th><th>%</th><th>Total</th><th>%</th></tr></thead><tbody>
+    ${ms.map(m=>{ const a0=t.byM[m]||{rec:0,recVal:0,ot:0,otRev:0,ex:0}, a={...a0,otRev:(a0.otRev||0)+(a0.ex||0)}, b=budgetFor(id,m)||{}; const tb=(b.rec||0)+(b.ot||0);
       return `<tr><td>${esc(monthName(m,true))}</td><td>${cell(a.recVal,b.rec)}</td><td>${pc(a.recVal,b.rec)}</td><td>${cell(a.otRev,b.ot)}</td><td>${pc(a.otRev,b.ot)}</td><td>${cell(a.recVal+a.otRev,tb)}</td><td>${pc(a.recVal+a.otRev,tb)}</td></tr>`; }).join('')}
     <tr class="tot"><td>YTD (budgeted months)</td><td>${cell(t.recCap,t.recGoal)}</td><td>${t.recPct!=null?pct1(t.recPct):'—'}</td><td>${cell(t.otCap,t.otGoal)}</td><td>${t.otPct!=null?pct1(t.otPct):'—'}</td><td>${cell(t.captured,t.budget)}</td><td>${t.goalPct!=null?pct1(t.goalPct):'—'}</td></tr>
     </tbody></table></div>
@@ -787,7 +825,7 @@ function openGoals(month){
   const months=Array.from({length:12},(_,i)=>y+'-'+pad(i+1));
   const bud=(state.roster.budgets||{})[cur]||{};
   const S=computeSales(cur,'ytd'), people={};
-  for(const t of S?[...S.board,...S.staff,...S.outside,...S.termed]:[]) people[t.id]={id:t.id,name:t.display,status:t.status,ytd:t.recVal+t.otRev};
+  for(const t of S?[...S.board,...S.staff,...S.outside,...S.termed]:[]) people[t.id]={id:t.id,name:t.display,status:t.status,ytd:t.recVal+t.otAll};
   for(const e of state.roster.employees||[]){ const id='e'+e.id; if(!people[id]&&/sales/i.test(e.dept)) people[id]={id,name:e.first+' '+e.last,status:'board',ytd:0}; }
   for(const mb of Object.values(state.roster.budgets||{})) for(const [id,b] of Object.entries(mb||{})) if(!people[id]) people[id]={id,name:b.name||id,status:'board',ytd:0};
   const order={board:0,staff:1,outside:2,termed:3};
@@ -976,6 +1014,7 @@ function detect(rows){
     if(has('Cancel Date')&&has('Tech Name')) return {type:'cancel',hi:i,h};
     if(has('Employee Status Description')&&has('Location Description')) return {type:'employees',hi:i,h};
     if(has('Sales Type')&&has('Technician Name')) return {type:'sales',hi:i,h};
+    if(has('ClassCode')&&has('Sales Budget')) return {type:'dor',hi:i,h};
     if(has('Status')&&has('Technician Name')&&has('Work Date')) return {type:'route',hi:i,h};
     if(has('Tech 1')&&has('Work Date')) return {type:'open',hi:i,h};
   }
@@ -990,6 +1029,25 @@ function parseReport(file,wb){
     const objs=objects(rows,d.hi,d.h).filter(inBranch);
     const out={type:d.type,file:file.name,months:{},codes:{},termedSeen:{}};
     const seen=n=>{ if(n?.termed) out.termedSeen[n.key]=n.termed; };
+    if(d.type==='dor'){
+      // Power BI DOR sales budget. The "Applied filters" note says which months it covers.
+      const note=rows.map(r=>r.join(' ')).find(x=>/Applied filters/i.test(x))||'';
+      const MN=['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+      let months=[...note.matchAll(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.? (\d{4})\b/gi)].map(x=>x[2]+'-'+pad(MN.indexOf(x[1].slice(0,3).toLowerCase())+1));
+      if(/current month/i.test(note)){ const last=months.sort().slice(-1)[0]; let cm=todayStr().slice(0,7);
+        if(last){ const [y,mo]=last.split('-').map(Number); cm=mo===12?(y+1)+'-01':y+'-'+pad(mo+1); } months.push(cm); }
+      months=[...new Set(months)].sort();
+      if(!months.length) months=[todayStr().slice(0,7)];
+      const byClass={}; let total=null;
+      for(const o of objs){ const c=String(o['ClassCode']||'').trim(); if(!c||/applied filters/i.test(c)) continue;
+        const row={sales:num(o['MTD Total Sales'])||0,budget:num(o['Sales Budget'])||0,rec:num(o['MTD Recurring Sales'])||0,recBudget:num(o['Budget Recurring Sales'])||0,
+          ot:(num(o['MTD One Time Sales'])||0)+(num(o['MTD Excess Initial Sales'])||0),otBudget:num(o['Budget One Time & Ex Initial Sales'])||0,count:num(o['MTD Total Sales Count'])||0};
+        if(/^total$/i.test(c)) total=row; else byClass[c.toUpperCase()]=row; }
+      if(!total){ total={sales:0,budget:0,rec:0,recBudget:0,ot:0,otBudget:0,count:0}; for(const r of Object.values(byClass)) for(const k in total) total[k]+=r[k]; }
+      out.dor={months,total,byClass};
+      out.summary=`Sales budget for ${months.length===1?monthName(months[0]):`${monthName(months[0],true)}–${monthName(months[months.length-1],true)} ${months[0].slice(0,4)}`}: ${money(total.budget)} total (${money(total.recBudget)} recurring, ${money(total.otBudget)} one-time & initial) across ${Object.keys(byClass).length} service classes.`;
+      return out;
+    }
     if(d.type==='employees'){
       out.employees=objs.filter(o=>String(o['Location Description']).trim().toLowerCase()===LOCATION.toLowerCase()&&!/term/i.test(o['Employee Status Description']||'')&&o['Last Name'])
         .map(o=>({id:String(o['Employee Id']||o['Last Name']+o['Preferred/First Name']),first:String(o['Preferred/First Name']||'').trim(),last:String(o['Last Name']).trim(),dept:String(o['Department Description']||''),title:String(o['Position Description']||''),status:String(o['Employee Status Description']||'')}));
@@ -1017,7 +1075,7 @@ function parseReport(file,wb){
       out.summary=`${n} cancellations across ${Object.keys(out.months).length} months${dupS||dupL?`, after removing ${dupS} repeated setups and combining ${dupL} same-day cancels of the same service at the same location`:''}.`;
     }
     if(d.type==='sales'){
-      let rec=0,ot=0,dup=0; out.asOf={}; out.by='salesperson'; out.growth={}; const seenO=new Set();
+      let rec=0,ot=0,dup=0; out.asOf={}; out.by='salesperson'; out.growth={}; out.salesClass={}; const seenO=new Set();
       for(const o of objs){
         const on=String(o['Invoice Num']??o['Order Num']??'').trim(); if(on){ if(seenO.has(on)){ dup++; continue; } seenO.add(on); }
         let m=null; const my=String(o['Month Year']||'').match(/^([A-Za-z]{3})-(\d{4})$/);
@@ -1025,9 +1083,14 @@ function parseReport(file,wb){
         if(!m){ const dt=toDate(o['Invoice Date']); if(dt) m=ym(dt); } if(!m) continue;
         const M=out.months[m]||(out.months[m]={});
         const nm=parseName(o['Salesperson Name'])||{key:'unassigned|'}; seen(nm);
-        const t=M[nm.key]||(M[nm.key]={rec:0,recVal:0,recTotal:0,ot:0,otRev:0}), total=num(o['Total Sales'])||0;
+        const t=M[nm.key]||(M[nm.key]={rec:0,recVal:0,recTotal:0,ot:0,otRev:0,ex:0}), total=num(o['Total Sales'])||0;
         const isRec=/recur/i.test(o['Sales Type']);
-        if(isRec){ t.rec++; t.recVal+=num(o['Annual Value'])||0; t.recTotal+=total; rec++; } else { t.ot++; t.otRev+=total; ot++; }
+        // Excess initial: the extra charged on a recurring setup's first service. The DOR counts it with one-time sales.
+        const exI=isRec?(num(o['Excess Intial']??o['Excess Initial'])||0):0, annual=isRec?(num(o['Annual Value'])||0):0;
+        if(isRec){ t.rec++; t.recVal+=annual; t.recTotal+=total; t.ex+=exI; rec++; } else { t.ot++; t.otRev+=total; ot++; }
+        const cls=String(o['Service Class']||'OTHER').trim().toUpperCase()||'OTHER';
+        const SC=out.salesClass[m]||(out.salesClass[m]={}), sc=SC[cls]||(SC[cls]={total:0,rec:0,ot:0,ex:0,n:0});
+        sc.total+=total; sc.n++; if(isRec){ sc.rec+=annual; sc.ex+=exI; } else sc.ot+=total;
         const tn=parseName(o['Technician Name'])||{key:'unassigned|'}; seen(tn); if(o['Technician Code']) out.codes[String(o['Technician Code']).trim()]=tn.key;
         const G=out.growth[m]||(out.growth[m]={}), gt=G[tn.key]||(G[tn.key]={rec:0,ot:0}); if(isRec) gt.rec++; else gt.ot++;
         const dt=toDate(o['Invoice Date']); if(dt){ const ds=ymd(dt); if(ds.slice(0,7)===m&&(!out.asOf[m]||ds>out.asOf[m])) out.asOf[m]=ds; }
@@ -1070,7 +1133,7 @@ function parseReport(file,wb){
 
 /* ---------- upload ---------- */
 function openUpload(){ state.pending=[]; $('#upFile').value=''; $('#fileList').innerHTML=''; $('#upStatus').textContent=''; $('#saveUp').disabled=true; $('#upDlg').showModal(); }
-const TYPE_LBL={base:'Customer list',cancel:'Cancel detail',sales:'Sales details',route:'Route completion details',open:'Open orders',employees:'Employment list'};
+const TYPE_LBL={dor:'DOR sales budget',base:'Customer list',cancel:'Cancel detail',sales:'Sales details',route:'Route completion details',open:'Open orders',employees:'Employment list'};
 async function onFiles(files){
   const list=$('#fileList');
   for(const f of files){
@@ -1096,14 +1159,15 @@ async function saveAll(){
   const st=$('#upStatus'), btn=$('#saveUp'); btn.disabled=true; st.className='status'; st.textContent='Saving…';
   const roster=JSON.parse(JSON.stringify(state.roster)); roster.codes=roster.codes||{}; roster.termedSeen=roster.termedSeen||{}; roster.show=roster.show||{};
   const touched={}, newBases={}; let newNames=null; const at=new Date().toISOString();
-  const order=['employees','base','cancel','sales','route','open'];
+  const order=['employees','dor','base','cancel','sales','route','open'];
   for(const p of [...state.pending].sort((a,b)=>order.indexOf(a.type)-order.indexOf(b.type))){
     Object.assign(roster.codes,p.codes); Object.assign(roster.termedSeen,p.termedSeen);
     if(p.type==='employees'){ roster.employees=p.employees; roster.employeesFile=p.file; roster.employeesAt=at; continue; }
+    if(p.type==='dor'){ roster.dor=roster.dor||{}; const key=p.dor.months.length===1?p.dor.months[0]:'ytd'; roster.dor[key]={...p.dor,file:p.file,at}; continue; }
     if(p.type==='base'){ newBases[p.asOf]={...p.base,at}; newNames={asOf:p.asOf,names:p.locnames}; continue; }
     for(const [m,data] of Object.entries(p.months)){
       const d=touched[m]||(touched[m]=JSON.parse(JSON.stringify(state.months[m]||{})));
-      d[p.type]=data; if(p.growth) d.growth=p.growth[m]||{}; if(p.spCancel) d.spCancel=p.spCancel[m]||{}; if(p.cancelLocs) d.cancelLocs=p.cancelLocs[m]||[]; if(p.cvLocs) d.routeCV=p.cvLocs[m]||[]; if(p.cancelList) d.cancelList=p.cancelList[m]||[]; if(p.voidList) d.voidList=p.voidList[m]||[]; d.sources=d.sources||{}; d.sources[p.type]={file:p.file,at,...(p.asOf?.[m]?{asOf:p.asOf[m]}:{}),...(p.by?{by:p.by}:{}),...(p.ns?{ns:p.ns[m]||{n:0,amt:0}}:{})};
+      d[p.type]=data; if(p.growth) d.growth=p.growth[m]||{}; if(p.spCancel) d.spCancel=p.spCancel[m]||{}; if(p.cancelLocs) d.cancelLocs=p.cancelLocs[m]||[]; if(p.cvLocs) d.routeCV=p.cvLocs[m]||[]; if(p.salesClass) d.salesClass=p.salesClass[m]||{}; if(p.cancelList) d.cancelList=p.cancelList[m]||[]; if(p.voidList) d.voidList=p.voidList[m]||[]; d.sources=d.sources||{}; d.sources[p.type]={file:p.file,at,...(p.asOf?.[m]?{asOf:p.asOf[m]}:{}),...(p.by?{by:p.by}:{}),...(p.ns?{ns:p.ns[m]||{n:0,amt:0}}:{})};
     }
   }
   try{
