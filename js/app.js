@@ -36,9 +36,9 @@ const SORTS={
   sales:[
     {key:'proj',label:'Overall',dir:-1},
     {key:'score',label:'Sales score',dir:-1},
-    {key:'goalPct',label:'Overall % of goal',dir:-1},
-    {key:'recPct',label:'Recurring % of goal',dir:-1},
-    {key:'otPct',label:'One-time % of goal',dir:-1},
+    {key:'goalPct',label:'Captured % of budget',dir:-1},
+    {key:'recPct',label:'Recurring % of budget',dir:-1},
+    {key:'otPct',label:'One-time % of budget',dir:-1},
     {key:'recAmt',label:'Recurring',dir:-1},
     {key:'otRev',label:'One-time $',dir:-1},
   ],
@@ -65,7 +65,7 @@ function num(v){ if(typeof v==='number') return isFinite(v)?v:null; if(v==null) 
 function pct1(v){ return v==null?'—':(Math.abs(v)<0.05?0:v).toFixed(1)+'%'; }
 function pct(v){ return v==null?'—':(Math.abs(v)<10?v.toFixed(1):Math.round(v))+'%'; }
 function money(v){ if(v==null) return '—'; const a=Math.abs(v); return (v<0?'-':'')+'$'+(a>=1e6?(a/1e6).toFixed(2)+'M':a>=100000?Math.round(a/1000)+'k':a>=10000?(a/1000).toFixed(1)+'k':Math.round(a).toLocaleString()); }
-function fmt(k,v){ if(v==null) return '—'; if(k==='recAmt') return state.roster.goalUnit==='accounts'?Math.round(v).toLocaleString():money(v); if(PCT.includes(k)) return pct1(v); if(MONEY.includes(k)) return money(v); if(k==='netGain') return (v>0?'+':'')+Math.round(v); return Math.round(v).toLocaleString(); }
+function fmt(k,v){ if(v==null) return '—'; if(k==='recAmt') return money(v); if(PCT.includes(k)) return pct1(v); if(MONEY.includes(k)) return money(v); if(k==='netGain') return (v>0?'+':'')+Math.round(v); return Math.round(v).toLocaleString(); }
 const tc=s=>String(s||'').toLowerCase().replace(/(^|[\s\-'])([a-z])/g,(m,a,b)=>a+b.toUpperCase());
 const norm=s=>String(s||'').toLowerCase().replace(/[^a-z]/g,'');
 function firstMatch(a,b){ a=norm(a); b=norm(b); if(!a||!b) return false; if(a===b) return true; if((NICK[a]||a)===(NICK[b]||b)) return true; return a[0]===b[0]; }
@@ -323,7 +323,7 @@ function render(){
   c.querySelectorAll('[data-sp]').forEach(b=>b.onclick=()=>openSales(b.dataset.sp));
   c.querySelectorAll('[data-branch]').forEach(b=>b.onclick=()=>openBranch(b.dataset.branch));
   if(state.mode==='month') wireLists(c); else c.querySelectorAll('[data-list]').forEach(x=>{ x.removeAttribute('data-list'); x.classList.remove('clk'); });
-  $('#goalsBtn')?.addEventListener('click',openGoals);
+  $('#goalsBtn')?.addEventListener('click',()=>openGoals());
   c.querySelectorAll('[data-tech]').forEach(b=>b.onclick=()=>openTech(b.dataset.tech));
   c.querySelectorAll('[data-rm]').forEach(b=>b.onclick=()=>removeSource(b.dataset.rm));
   c.querySelectorAll('[data-rmbase]').forEach(b=>b.onclick=()=>removeBase(b.dataset.rmbase));
@@ -435,7 +435,7 @@ function renderYTD(c){
   } else if(sec==='sales'){
     const S=computeSales(ytdEnd(),'ytd'); if(!S){ c.innerHTML=`<div class="empty"><h2>No sales details for ${esc(periodLabel())}</h2></div>`; return; }
     const B=S.B, isVal=S.unit!=='accounts';
-    parts.push(kpiStrip([...(S.hasGoals?[['Team % of goal',B.goalPct!=null?pct(B.goalPct):'—','salespeople with goals']]:[]),
+    parts.push(kpiStrip([...(S.hasGoals?[['Captured vs. budget',B.goalPct!=null?pct1(B.goalPct):'—',`${money(B.captured)} of ${money(B.budget)} · ${S.budMonths.length} budgeted month${S.budMonths.length===1?'':'s'}`,B.goalPct!=null?`<span class="pb ${B.goalPct>=S.exp*100?'ok':'no'}">${B.goalPct>=S.exp*100?'ON PACE':'OFF PACE'}</span>`:'']]:[]),
       ['Recurring sold',money(B.recVal),`${B.rec} setups`],['One-time sold',money(B.otRev),`${B.ot} jobs`],
       ...(S.cancels!=null?[['Net setups',fmt('netGain',B.rec-S.cancels),`${B.rec} added · ${S.cancels} cancelled`]]:[])],'sales'));
     parts.push(`<p class="periodline">${esc(periodLabel())} · branch only</p>`);
@@ -487,7 +487,7 @@ function branchBody(sec){
   if(sec==='sales'){
     const S=computeSales(curMonth(),state.mode); if(!S) return; const B=S.B, isVal=S.unit!=='accounts';
     body.push(`<h3>Sales</h3>`+rowsTable(['','Count','Value'],[['Recurring sales',B.rec,money(B.recVal)+' / yr'],['One-time sales',B.ot,money(B.otRev)]]));
-    if(S.hasGoals) body.push(`<h3>Against goals</h3><p class="sub">Combines everyone who has a goal.</p><span class="goals" style="display:grid">${goalBar('Recurring',B.gRec,B.recGoal,B.recPct,S.exp,isVal)}${goalBar('One-time',B.gOt,B.otGoal,B.otPct,S.exp,true)}</span>`);
+    if(S.hasGoals) body.push(`<h3>Captured vs. budget</h3><p class="sub">${money(B.captured)} captured of ${money(B.budget)} budgeted (${pct1(B.goalPct)}), combining everyone with a budget${state.mode==='ytd'?` across the ${S.budMonths.length} budgeted month${S.budMonths.length===1?'':'s'}`:''}.</p><span class="goals" style="display:grid">${goalBar('Recurring',B.gRec,B.recGoal,B.recPct,S.exp,isVal)}${goalBar('One-time',B.gOt,B.otGoal,B.otPct,S.exp,true)}</span>`);
     if(S.cancels!=null) body.push(`<h3>Net change in setups</h3><p>${B.rec} recurring added − ${S.cancels} cancelled = <b>${fmt('netGain',B.rec-S.cancels)}</b></p>`);
     if(B.early) body.push(`<p class="sub">${B.early} cancellations were first-year customers.</p>`);
     const names=l=>l.map(t=>`<button type="button" class="linkish" data-sp="${esc(t.id)}">${esc(t.display)}</button>`).join(', ');
@@ -625,26 +625,29 @@ async function removeSource(id){
   }catch(e){ alert('Couldn’t remove that report.'); }
 }
 
-/* ---------- sales goals ---------- */
+/* ---------- sales budgets: helpers ---------- */
 function todayStr(){ const d=new Date(); return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate()); }
 function goalMonths(month,mode){ if(mode==='month') return [month]; const y=month.slice(0,4), n=+month.slice(5); return Array.from({length:n},(_,i)=>y+'-'+pad(i+1)); }
 function expectedFor(m){ const now=todayStr(); if(m<now.slice(0,7)) return 1; if(m>now.slice(0,7)) return 0; return workdayShare(m,now); }
 function salesStatus(r){
-  const goals=state.roster.goals||{};
   if(r.status==='main') return 'main';
   if(r.status==='other') return 'other';
-  if(goals[r.id]) return 'board';
+  if(hasAnyBudget(r.id)) return 'board';
   if(r.emp&&/sales/i.test(r.emp.dept)) return 'board';
   if(r.emp) return 'staff';
   return state.roster.termedSeen?.[r.key]?'termed':'outside';
 }
 function sblank(id,display,status,emp){ return {id,display,status,emp,rec:0,recVal:0,recTotal:0,ot:0,otRev:0,early:0,spc:0,byM:{}}; }
+/* ---------- monthly sales budgets ---------- */
+// roster.budgets = { 'YYYY-MM': { personId: { name, rec, ot } } }  (dollars; recurring = annual value)
+function budgetFor(id,m){ return state.roster.budgets?.[m]?.[id]||null; }
+function hasAnyBudget(id){ return Object.values(state.roster.budgets||{}).some(b=>b&&b[id]); }
 function computeSales(month,mode){
   const gm=goalMonths(month,mode);
   const withData=gm.filter(m=>state.months[m]?.sales);
   if(!withData.length) return null;
   const stale=withData.some(m=>state.months[m].sources?.sales?.by!=='salesperson');
-  const goals=state.roster.goals||{}, unit=state.roster.goalUnit||'value', P={};
+  const P={};
   for(const m of withData){
     for(const [k,v] of Object.entries(state.months[m].sales)){
       const r=resolveKey(k), st=salesStatus(r);
@@ -657,21 +660,28 @@ function computeSales(month,mode){
   let hasQ=false;
   for(const m of gm){ const sc=state.months[m]?.spCancel; if(!sc) continue; hasQ=true;
     for(const [k,v] of Object.entries(sc)){ const r=resolveKey(k), st=salesStatus(r); const t=P[r.id]||(P[r.id]=sblank(r.id,r.display,st,r.emp)); t.early+=v.early||0; t.spc+=v.n||0; } }
-  for(const [id,g] of Object.entries(goals)) if(!P[id]) P[id]=sblank(id,g.name||id,'board',null);
-  const n=gm.length, exp=avg(gm.map(expectedFor))??1;
-  const derive=(t,g)=>{
-    t.recAmt=unit==='accounts'?t.rec:t.recVal;
-    t.recGoal=g&&g.rec?g.rec*n:null; t.otGoal=g&&g.ot?g.ot*n:null;
-    t.recPct=t.recGoal?t.recAmt/t.recGoal*100:null; t.otPct=t.otGoal?t.otRev/t.otGoal*100:null;
-    t.goalPct=avg([t.recPct,t.otPct]);
+  // anyone with a budget in these months gets a row, even before their first sale
+  const budMonths=gm.filter(m=>state.roster.budgets?.[m]&&Object.keys(state.roster.budgets[m]).length);
+  for(const m of budMonths) for(const [id,b] of Object.entries(state.roster.budgets[m])) if(!P[id]) P[id]=sblank(id,b.name||id,'board',null);
+  // how far through the budgeted period we are (a closed month counts as 1)
+  const exp=avg((budMonths.length?budMonths:gm).map(expectedFor))??1;
+  const derive=t=>{
+    t.recAmt=t.recVal;
+    let rg=0,og=0,rc=0,oc=0;
+    for(const m of gm){ const b=budgetFor(t.id,m); if(!b) continue; const a=t.byM[m]||{recVal:0,otRev:0};
+      if(b.rec){ rg+=b.rec; rc+=a.recVal; } if(b.ot){ og+=b.ot; oc+=a.otRev; } }
+    t.recGoal=rg||null; t.otGoal=og||null; t.recCap=rc; t.otCap=oc;
+    t.recPct=t.recGoal?rc/rg*100:null; t.otPct=t.otGoal?oc/og*100:null;
+    t.budget=(rg+og)||null; t.captured=rc+oc;
+    t.goalPct=t.budget?t.captured/t.budget*100:null;
     // Overall = recurring annual value + one-time sales; in a month still under way, projected to month end at the current pace
     t.overall=(t.recVal||0)+(t.otRev||0);
     t.proj=mode==='month'&&exp>0&&exp<1?t.overall/exp:t.overall;
   };
-  const all=Object.values(P); all.forEach(t=>derive(t,goals[t.id]));
+  const all=Object.values(P); all.forEach(derive);
   const B=sblank('branch','Branch total','branch',null);
   for(const t of all) for(const f of ['rec','recVal','recTotal','ot','otRev','early','spc']) B[f]+=t[f];
-  // Sales score: 45 pts recurring vs goal pace, 35 pts one-time vs goal pace, 20 pts first-year cancels on their sales vs branch
+  // Sales score: 45 pts recurring vs budget pace, 35 pts one-time vs budget pace, 20 pts first-year cancels on their sales vs branch
   const branchEarly=B.rec?B.early/B.rec:0, ep=Math.max(exp,0.01);
   for(const t of all){
     const parts=[];
@@ -683,26 +693,27 @@ function computeSales(month,mode){
     t.score=parts.length&&(t.recGoal||t.otGoal)?Math.round(100*parts.reduce((a,[w,v])=>a+w*v,0)/parts.reduce((a,[w])=>a+w,0)):null;
     t.scoreParts=parts;
   }
-  const bg={rec:0,ot:0}; for(const g of Object.values(goals)){ bg.rec+=+g.rec||0; bg.ot+=+g.ot||0; }
-  derive(B,(bg.rec||bg.ot)?bg:null);
-  // branch % of goal only counts sales by people who have goals
-  const G=all.filter(t=>goals[t.id]);
-  B.gRec=G.filter(t=>t.recGoal).reduce((x,t)=>x+t.recAmt,0); B.gOt=G.filter(t=>t.otGoal).reduce((x,t)=>x+t.otRev,0);
-  B.recPct=B.recGoal?B.gRec/B.recGoal*100:null; B.otPct=B.otGoal?B.gOt/B.otGoal*100:null; B.goalPct=avg([B.recPct,B.otPct]);
+  // branch: everyone's budgets added up, against what those same people captured in those months
+  B.recAmt=B.recVal;
+  B.recGoal=all.reduce((a,t)=>a+(t.recGoal||0),0)||null; B.otGoal=all.reduce((a,t)=>a+(t.otGoal||0),0)||null;
+  B.gRec=all.reduce((a,t)=>a+(t.recGoal?t.recCap:0),0); B.gOt=all.reduce((a,t)=>a+(t.otGoal?t.otCap:0),0);
+  B.recPct=B.recGoal?B.gRec/B.recGoal*100:null; B.otPct=B.otGoal?B.gOt/B.otGoal*100:null;
+  B.budget=(B.recGoal||0)+(B.otGoal||0)||null; B.captured=B.gRec+B.gOt; B.goalPct=B.budget?B.captured/B.budget*100:null;
+  B.overall=B.recVal+B.otRev; B.proj=mode==='month'&&exp>0&&exp<1?B.overall/exp:B.overall;
   const RC=compute(month,mode); const cancels=RC&&RC.has.cancel?RC.B.c:null;
   const by=s=>all.filter(t=>t.status===s);
-  return {board:by('board'),termed:by('termed'),outside:by('outside'),staff:by('staff'),main:by('main'),other:by('other'),B,exp,n,unit,stale,cancels,hasGoals:Object.keys(goals).length>0};
+  return {board:by('board'),termed:by('termed'),outside:by('outside'),staff:by('staff'),main:by('main'),other:by('other'),B,exp,n:gm.length,budMonths,unit:'value',stale,cancels,hasGoals:budMonths.length>0};
 }
 function goalBand(pct,exp){ if(pct==null) return 'c-none'; const r=exp>0?pct/(exp*100):1; return r>=1?'c-good':r>=0.8?'c-mid':'c-low'; }
 function goalBar(label,amt,goal,pctV,exp,isMoney){
   const a=isMoney?money(amt):Math.round(amt).toLocaleString();
-  if(goal==null) return `<span class="gb c-none"><span class="gbl">${label}</span><span class="gbt"></span><span class="gbv">${a} · no goal</span></span>`;
+  if(goal==null) return `<span class="gb c-none"><span class="gbl">${label}</span><span class="gbt"></span><span class="gbv">${a} · no budget</span></span>`;
   const g=isMoney?money(goal):Math.round(goal).toLocaleString();
-  return `<span class="gb ${goalBand(pctV,exp)}"><span class="gbl">${label}</span><span class="gbt"><span class="gbf" style="width:${Math.min(pctV,100)}%"></span>${exp<1?`<span class="gbx" style="left:${exp*100}%"></span>`:''}</span><span class="gbv"><b>${pct(pctV)}</b> · ${a} of ${g}</span></span>`;
+  return `<span class="gb ${goalBand(pctV,exp)}"><span class="gbl">${label}</span><span class="gbt"><span class="gbf" style="width:${Math.min(pctV,100)}%"></span>${exp<1?`<span class="gbx" style="left:${exp*100}%"></span>`:''}</span><span class="gbv"><b>${pct(pctV)}</b> · ${a} of ${g} budget</span></span>`;
 }
 function renderSales(c){
   const S=computeSales(state.month,state.mode);
-  const goalsBtn=state.canEdit===false?'':`<button type="button" class="ghost admin" id="goalsBtn">Set sales goals</button>`;
+  const goalsBtn=state.canEdit===false?'':`<button type="button" class="ghost admin" id="goalsBtn">Sales budgets</button>`;
   if(!S){ c.innerHTML=`<div class="empty"><h2>No sales details for ${esc(periodLabel())}</h2><p>Upload the sales details export covering this period.</p>${state.canEdit===false?'':'<button class="btn" type="button" id="emptyUp">Upload reports</button>'}</div>${sourcesBlock()}`; return; }
   const B=S.B, isVal=S.unit!=='accounts';
   const projecting=state.mode==='month'&&S.exp>0&&S.exp<1;
@@ -723,14 +734,14 @@ function renderSales(c){
   c.innerHTML=`
     ${S.stale?'<p class="banner" style="border-radius:8px">Some months were uploaded before sales were credited to salespeople. Re-upload the sales details export to fix them.</p>':''}
     ${kpiStrip([
-      ...(S.hasGoals?[['Team % of goal',B.goalPct!=null?pct(B.goalPct):'—','salespeople with goals']]:[]),
-      ['Recurring sold',isVal?money(B.recVal):B.rec,`${B.rec} setups${B.recPct!=null?` · ${pct(B.recPct)} of goal`:''}`],
-      ['One-time sold',money(B.otRev),`${B.ot} jobs${B.otPct!=null?` · ${pct(B.otPct)} of goal`:''}`],
+      ...(S.hasGoals?[['Captured vs. budget',B.goalPct!=null?pct1(B.goalPct):'—',`${money(B.captured)} of ${money(B.budget)} budgeted`,B.goalPct!=null?`<span class="pb ${B.goalPct>=S.exp*100?'ok':'no'}">${S.exp>=1?(B.goalPct>=100?'BUDGET MET':'BUDGET MISSED'):(B.goalPct>=S.exp*100?'ON PACE':'OFF PACE')}</span>`:'']]:[]),
+      ['Recurring sold',money(B.recVal),`${B.rec} setups${B.recPct!=null?` · ${pct1(B.recPct)} of budget`:''}`],
+      ['One-time sold',money(B.otRev),`${B.ot} jobs${B.otPct!=null?` · ${pct1(B.otPct)} of budget`:''}`],
       ...(S.cancels!=null?[['Net setups',fmt('netGain',B.rec-S.cancels),`${B.rec} added · ${S.cancels} cancelled`]]:[])],'sales')}
-    ${S.hasGoals&&B.goalPct!=null?bill(B.goalPct>=S.exp*100?`The sales team is at ${pct1(B.goalPct)} of goal, right where it should be by now. Keep stacking setups.`:`The sales team is at ${pct1(B.goalPct)} of goal; about ${pct1(S.exp*100)} would be on pace by today.`):''}
+    ${S.hasGoals&&B.goalPct!=null?bill(B.goalPct>=S.exp*100?`The sales team has captured ${pct1(B.goalPct)} of budget, right where it should be by now. Keep stacking setups.`:`The sales team has captured ${pct1(B.goalPct)} of budget; about ${pct1(S.exp*100)} would be on pace by today.`):''}
     <p class="periodline">${esc(periodLabel())} · credit goes to the salesperson on each sale${S.exp<1?' · the black mark on each bar is where they should be today':''}</p>
-    ${sk==='score'?'<p class="hint">Sales score out of 100: 45 points for recurring sales against goal, 35 for one-time sales against goal (both measured against where they should be by today), and 20 for keeping first-year cancellations on their sales at or below the branch rate.</p>':''}
-    <div class="toolrow">${goalsBtn}${!S.hasGoals?'<span class="sub">No goals yet. Set them to track each salesperson against their monthly targets.</span>':''}</div>
+    ${sk==='score'?'<p class="hint">Sales score out of 100: 45 points for recurring dollars captured against budget, 35 for one-time dollars captured against budget (both measured against where they should be by today), and 20 for keeping first-year cancellations on their sales at or below the branch rate.</p>':''}
+    <div class="toolrow">${goalsBtn}${!S.hasGoals?'<span class="sub">No budget for this month yet. Add one to track captured sales against budgeted dollars.</span>':''}</div>
     <nav class="tabs" aria-label="Rank by">${sorts.map(x=>`<button type="button" data-sort="${x.key}" aria-pressed="${x.key===sk}">${x.label}</button>`).join('')}</nav>
     ${sk==='proj'?`<p class="hint">Overall is recurring annual value plus one-time sales${projecting?`, projected to month end at the current pace (${pct1(S.exp*100)} of the month’s workdays are done)`:''}. Ranked best to worst.</p>`:''}
     <button type="button" class="branch" data-branch="sales"><span class="who"><span class="name">Branch total</span>
@@ -742,71 +753,70 @@ function renderSales(c){
         <span class="rank">${t[sk]==null?'–':i+1}</span>
         <span class="who"><span class="name">${esc(t.display)}</span><span class="chips">${sk==='proj'&&projecting?`<span><b>${money(t.overall)}</b> so far</span>`:''}${sk!=='score'&&t.score!=null?`<span>score <b>${t.score}</b></span>`:''}<span><b>${t.rec}</b> recurring</span><span><b>${money(t.recVal)}</b>/yr</span><span><b>${t.ot}</b> one-time</span>${t.earlyRate!=null?`<span><b>${t.early}</b> first-year cancels</span>`:''}</span></span>
         <span class="score"><span class="num">${big}</span></span>
-        <span class="goals">${goalBar('Recurring',t.recAmt,t.recGoal,t.recPct,S.exp,isVal)}${goalBar('One-time',t.otRev,t.otGoal,t.otPct,S.exp,true)}</span></button></li>`;
+        <span class="goals">${goalBar('Recurring',t.recGoal?t.recCap:t.recAmt,t.recGoal,t.recPct,S.exp,true)}${goalBar('One-time',t.otGoal?t.otCap:t.otRev,t.otGoal,t.otPct,S.exp,true)}</span></button></li>`;
     }).join('')}</ol>${sourcesBlock()}`;
   c.querySelectorAll('[data-sort]').forEach(b=>b.onclick=()=>{state.sort.sales=b.dataset.sort;render();});
 }
 function openSales(id){
-  const Y=computeSales(state.month,'ytd'); if(!Y) return;
+  const Y=computeSales(curMonth(),'ytd'); if(!Y) return;
   const t=[...Y.board,...Y.termed,...Y.outside,...Y.staff,...Y.main,...Y.other].find(x=>x.id===id); if(!t) return;
-  const g=(state.roster.goals||{})[id], isVal=Y.unit!=='accounts';
-  const ms=goalMonths(state.month,'ytd');
-  const cellPct=(a,goal)=>goal?pct(a/goal*100):'—';
-  $('#techTitle').innerHTML=esc(t.display)+(t.status==='board'?'':`<span class="statusTag">${{main:'Main branch',staff:'No goal',outside:'Not on Tucson list',termed:'Termed',other:'Other'}[t.status]}</span>`);
+  const ms=goalMonths(curMonth(),'ytd').filter(m=>m>=START_MONTH||budgetFor(id,m));
+  const cell=(a,b)=>b?`${money(a)} <span class="sub">of ${money(b)}</span>`:money(a);
+  const pc=(a,b)=>b?pct1(a/b*100):'—';
+  $('#techTitle').innerHTML=esc(t.display)+(t.status==='board'?'':`<span class="statusTag">${{main:'Main branch',staff:'No budget',outside:'Not on Tucson list',termed:'Termed',other:'Other'}[t.status]}</span>`);
+  const P=computeSales(curMonth(),state.mode); const x=P&&[...P.board,...P.termed,...P.outside,...P.staff,...P.main,...P.other].find(y=>y.id===id);
+  const lbl=['Recurring vs budget','One-time vs budget','Sale quality'], ws=[45,35,20];
   $('#techBody').innerHTML=`
-    ${(()=>{ const P=computeSales(state.month,state.mode); const x=P&&[...P.board,...P.termed,...P.outside,...P.staff,...P.main,...P.other].find(y=>y.id===id); if(!x||x.score==null) return '';
-      const lbl=['Recurring vs goal','One-time vs goal','Sale quality']; const ws=[45,35,20];
-      return `<div class="big ${x.score>=80?'c-good':x.score>=60?'c-mid':'c-low'}"><span class="num">${x.score}</span><span class="lab">sales score, ${esc(periodLabel())}</span></div>
-      <p class="sub">${x.scoreParts.map(([w,v])=>`${lbl[ws.indexOf(w)]}: ${Math.round(w*v)} of ${w}`).join(' · ')}${x.earlyRate!=null?` · ${x.early} first-year cancels on ${x.rec} recurring sales`:''}</p>`; })()}
-    <p class="sub">${g?`Monthly goals: ${isVal?money(g.rec):g.rec+' accounts'} recurring, ${money(g.ot)} one-time.`:'No monthly goals set.'}</p>
-    <h3>${esc(state.month.slice(0,4))} by month</h3>
-    <div class="tbl"><table><thead><tr><th>Month</th><th>Recurring</th><th>% goal</th><th>One-time</th><th>% goal</th></tr></thead><tbody>
-    ${ms.map(m=>{ const b=t.byM[m]||{rec:0,recVal:0,ot:0,otRev:0}; const ra=isVal?b.recVal:b.rec;
-      return `<tr><td>${esc(monthName(m,true))}</td><td>${isVal?money(ra):ra} <span class="sub">(${b.rec})</span></td><td>${cellPct(ra,g?.rec)}</td><td>${money(b.otRev)}</td><td>${cellPct(b.otRev,g?.ot)}</td></tr>`; }).join('')}
-    <tr class="tot"><td>YTD</td><td>${isVal?money(t.recAmt):t.recAmt}</td><td>${t.recPct!=null?pct(t.recPct):'—'}</td><td>${money(t.otRev)}</td><td>${t.otPct!=null?pct(t.otPct):'—'}</td></tr>
+    ${x&&x.score!=null?`<div class="big ${x.score>=80?'c-good':x.score>=60?'c-mid':'c-low'}"><span class="num">${x.score}</span><span class="lab">sales score, ${esc(periodLabel())}</span></div>
+      <p class="sub">${x.scoreParts.map(([w,v])=>`${lbl[ws.indexOf(w)]}: ${Math.round(w*v)} of ${w}`).join(' · ')}${x.earlyRate!=null?` · ${x.early} first-year cancels on ${x.rec} recurring sales`:''}</p>`:''}
+    <h3>Captured vs. budget by month</h3>
+    <div class="tbl"><table><thead><tr><th>Month</th><th>Recurring captured</th><th>%</th><th>One-time captured</th><th>%</th><th>Total</th><th>%</th></tr></thead><tbody>
+    ${ms.map(m=>{ const a=t.byM[m]||{rec:0,recVal:0,ot:0,otRev:0}, b=budgetFor(id,m)||{}; const tb=(b.rec||0)+(b.ot||0);
+      return `<tr><td>${esc(monthName(m,true))}</td><td>${cell(a.recVal,b.rec)}</td><td>${pc(a.recVal,b.rec)}</td><td>${cell(a.otRev,b.ot)}</td><td>${pc(a.otRev,b.ot)}</td><td>${cell(a.recVal+a.otRev,tb)}</td><td>${pc(a.recVal+a.otRev,tb)}</td></tr>`; }).join('')}
+    <tr class="tot"><td>YTD (budgeted months)</td><td>${cell(t.recCap,t.recGoal)}</td><td>${t.recPct!=null?pct1(t.recPct):'—'}</td><td>${cell(t.otCap,t.otGoal)}</td><td>${t.otPct!=null?pct1(t.otPct):'—'}</td><td>${cell(t.captured,t.budget)}</td><td>${t.goalPct!=null?pct1(t.goalPct):'—'}</td></tr>
     </tbody></table></div>
-    <p class="sub">Recurring is counted as ${isVal?'annual value':'number of accounts'}; the number in brackets is accounts sold.</p>
-    ${state.canEdit===false?'':'<div class="actions admin"><button type="button" class="ghost" id="editGoal">Edit goals</button></div>'}`;
+    <p class="sub">Recurring is captured as annual value. Year to date compares only the months that have a budget.</p>
+    ${state.canEdit===false?'':'<div class="actions admin"><button type="button" class="ghost" id="editGoal">Edit budgets</button></div>'}`;
   $('#editGoal')?.addEventListener('click',()=>{ $('#techDlg').close(); openGoals(); });
   $('#techDlg').showModal();
 }
-function openGoals(){
-  const y=(state.month||todayStr()).slice(0,4);
-  const ms=Object.keys(state.months).filter(m=>m.slice(0,4)===y).sort();
-  const S=ms.length?computeSales(ms[ms.length-1],'ytd'):null;
-  const goals=state.roster.goals||{}, people={};
+function openGoals(month){
+  const cur=month||curMonth()||todayStr().slice(0,7), y=cur.slice(0,4);
+  const months=Array.from({length:12},(_,i)=>y+'-'+pad(i+1));
+  const bud=(state.roster.budgets||{})[cur]||{};
+  const S=computeSales(cur,'ytd'), people={};
   for(const t of S?[...S.board,...S.staff,...S.outside,...S.termed]:[]) people[t.id]={id:t.id,name:t.display,status:t.status,ytd:t.recVal+t.otRev};
   for(const e of state.roster.employees||[]){ const id='e'+e.id; if(!people[id]&&/sales/i.test(e.dept)) people[id]={id,name:e.first+' '+e.last,status:'board',ytd:0}; }
-  for(const [id,g] of Object.entries(goals)) if(!people[id]) people[id]={id,name:g.name||id,status:'board',ytd:0};
+  for(const mb of Object.values(state.roster.budgets||{})) for(const [id,b] of Object.entries(mb||{})) if(!people[id]) people[id]={id,name:b.name||id,status:'board',ytd:0};
   const order={board:0,staff:1,outside:2,termed:3};
-  const list=Object.values(people).sort((a,b)=>(goals[b.id]?1:0)-(goals[a.id]?1:0)||order[a.status]-order[b.status]||b.ytd-a.ytd);
-  const unit=state.roster.goalUnit||'value';
+  const list=Object.values(people).sort((a,b)=>(bud[b.id]?1:0)-(bud[a.id]?1:0)||order[a.status]-order[b.status]||b.ytd-a.ytd);
+  const prevM=months[months.indexOf(cur)-1], prev=prevM&&state.roster.budgets?.[prevM];
+  $('#goalTitle').textContent='Sales budgets';
   $('#goalBody').innerHTML=`
-    <p class="sub">Enter each person’s monthly goals. Leave both blank to take someone off the sales board (Tucson outside sales stay on either way). Year-to-date goals are the monthly goal times the months so far.</p>
-    <div class="toolrow"><span>Recurring goal is measured in</span><div class="seg2" role="group"><button type="button" data-unit="value" aria-pressed="${unit==='value'}">Annual value $</button><button type="button" data-unit="accounts" aria-pressed="${unit==='accounts'}">Accounts sold</button></div></div>
-    <div class="tbl"><table><thead><tr><th>Salesperson</th><th>Recurring / mo</th><th>One-time $ / mo</th></tr></thead><tbody>
+    <div class="toolrow"><label>Month <select id="budMonth">${months.map(m=>`<option value="${m}" ${m===cur?'selected':''}>${esc(monthName(m))}${state.roster.budgets?.[m]&&Object.keys(state.roster.budgets[m]).length?' ✓':''}</option>`).join('')}</select></label>
+      ${prev&&Object.keys(prev).length?`<button type="button" class="ghost" id="copyPrev">Copy ${esc(monthName(prevM,true))}’s budgets</button>`:''}</div>
+    <p class="sub">Budgeted sales dollars for ${esc(monthName(cur))}. Recurring is annual value; one-time is the sale amount. Leave both blank for anyone without a budget this month. Tucson outside sales show on the board either way.</p>
+    <div class="tbl"><table><thead><tr><th>Salesperson</th><th>Recurring $</th><th>One-time $</th></tr></thead><tbody>
     ${list.map(p=>`<tr><td>${esc(p.name)}${p.status==='staff'?'<span class="statusTag">tech/staff</span>':p.status==='outside'?'<span class="statusTag">not Tucson</span>':p.status==='termed'?'<span class="statusTag">termed</span>':''}<br><span class="sub">${money(p.ytd)} sold YTD</span></td>
-      <td><input type="number" inputmode="decimal" min="0" step="any" data-g="rec" data-id="${esc(p.id)}" data-name="${esc(p.name)}" value="${goals[p.id]?.rec??''}" aria-label="${esc(p.name)} recurring goal" style="width:7.5rem"></td>
-      <td><input type="number" inputmode="decimal" min="0" step="any" data-g="ot" data-id="${esc(p.id)}" value="${goals[p.id]?.ot??''}" aria-label="${esc(p.name)} one-time goal" style="width:7.5rem"></td></tr>`).join('')}
+      <td><input type="number" inputmode="decimal" min="0" step="any" data-g="rec" data-id="${esc(p.id)}" data-name="${esc(p.name)}" value="${bud[p.id]?.rec||''}" aria-label="${esc(p.name)} recurring budget" style="width:7.5rem"></td>
+      <td><input type="number" inputmode="decimal" min="0" step="any" data-g="ot" data-id="${esc(p.id)}" value="${bud[p.id]?.ot||''}" aria-label="${esc(p.name)} one-time budget" style="width:7.5rem"></td></tr>`).join('')}
     </tbody></table></div>
-    <div class="actions"><button type="button" class="go" id="saveGoals">Save goals</button><span class="status" id="goalStatus"></span></div>`;
-  let u=unit;
-  $('#goalBody').querySelectorAll('[data-unit]').forEach(b=>b.onclick=()=>{ u=b.dataset.unit; $('#goalBody').querySelectorAll('[data-unit]').forEach(x=>x.setAttribute('aria-pressed',x.dataset.unit===u)); });
+    <div class="actions"><button type="button" class="go" id="saveGoals">Save ${esc(monthName(cur,true))} budgets</button><span class="status" id="goalStatus"></span></div>`;
+  $('#budMonth').onchange=e=>openGoals(e.target.value);
+  $('#copyPrev')?.addEventListener('click',()=>{ $('#goalBody').querySelectorAll('input[data-g]').forEach(inp=>{ const b=prev[inp.dataset.id]; if(b) inp.value=b[inp.dataset.g]||''; }); });
   $('#saveGoals').onclick=async()=>{
     const g={};
     $('#goalBody').querySelectorAll('input[data-g="rec"]').forEach(inp=>{
-      const id=inp.dataset.id, ot=$('#goalBody').querySelector(`input[data-g="ot"][data-id="${CSS.escape(id)}"]`);
+      const id=inp.dataset.id, ot=[...$('#goalBody').querySelectorAll('input[data-g="ot"]')].find(x=>x.dataset.id===id);
       const rv=parseFloat(inp.value), ov=parseFloat(ot.value);
       if(rv>0||ov>0) g[id]={name:inp.dataset.name,rec:rv>0?rv:0,ot:ov>0?ov:0};
     });
-    const r=JSON.parse(JSON.stringify(state.roster)); r.goals=g; r.goalUnit=u;
-    const st=$('#goalStatus'); st.className='status'; st.textContent='Saving…';
-    try{ if(state.db) await state.db.doc('roster/main').set(r); state.roster=r; render(); $('#goalDlg').close(); }
-    catch(e){ st.className='status err'; st.textContent=e&&e.code==='invalid_argument'?'Only editors of this board can change goals.':'Couldn’t save just now. Try again.'; }
+    const r=JSON.parse(JSON.stringify(state.roster)); r.budgets=r.budgets||{};
+    if(Object.keys(g).length) r.budgets[cur]=g; else delete r.budgets[cur];
+    state.roster=r; state.dirty=true; render(); $('#goalDlg').close();
   };
-  $('#goalDlg').showModal();
+  if(!$('#goalDlg').open) $('#goalDlg').showModal();
 }
-
 /* ---------- cancel and void line items (month board) ---------- */
 function lineItems(month){
   const d=state.months[month]||{}, R=compute(month,'month');
@@ -1124,6 +1134,7 @@ drop.addEventListener('drop',e=>{ e.preventDefault(); const fs=[...e.dataTransfe
 
 /* ---------- data file: load, update mode, export ---------- */
 function bannerHTML(){
+  if(ADMIN&&state.migratedGoals&&state.dirty) return `<div class="banner">Update mode · your earlier monthly goals were copied into <b>September and October budgets</b>. Check them under Sales → <b>Sales budgets</b>, then <b>Download board.json</b> and commit it.</div>`;
   if(ADMIN) return `<div class="banner">Update mode · upload reports, then <b>Download board.json</b> and commit it to <code>data/board.json</code>. Nothing is saved until you do.${state.dirty?' <b>You have unsaved changes.</b>':''}</div>`;
   if(state.loadError) return `<div class="banner">Couldn’t load the board data. ${esc(state.loadError)}</div>`;
   return state.dataAt?`<div class="asof">Numbers as of ${esc(new Date(state.dataAt).toLocaleString(undefined,{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}))}</div>`:'';
@@ -1132,6 +1143,13 @@ function applyData(d){
   Object.assign(state,{months:d.months||{},bases:d.bases||{},locnames:d.locnames||{},
     roster:Object.assign({employees:null,codes:{},termedSeen:{},show:{},goals:{},goalUnit:'value'},d.roster||{})});
   state.dataAt=d.at||null; state.month=null;
+  const g=state.roster.goals;
+  if(g&&Object.keys(g).length&&!state.roster.budgets){
+    state.roster.budgets={};
+    for(const m of Object.keys(state.months).filter(m=>m>=START_MONTH)) state.roster.budgets[m]=JSON.parse(JSON.stringify(g));
+    state.migratedGoals=true;
+  }
+  delete state.roster.goals; delete state.roster.goalUnit;
 }
 function boardData(includeNames){
   const months=JSON.parse(JSON.stringify(state.months));
@@ -1145,6 +1163,7 @@ function download(name,text){
 }
 function setupAdmin(){
   document.querySelectorAll('.adminbar').forEach(el=>el.hidden=false);
+  if(state.migratedGoals){ state.dirty=true; $('#banner').innerHTML=bannerHTML(); }
   if(!window.XLSX){ const sc=document.createElement('script'); sc.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'; document.head.appendChild(sc); }
   $('#exportBtn').onclick=()=>{ download('board.json',JSON.stringify(boardData($('#inclNames').checked))); state.dirty=false; $('#banner').innerHTML=bannerHTML(); };
   $('#openJson').onclick=()=>$('#jsonFile').click();
