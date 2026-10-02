@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Bullseye Board</title>
+<meta name="description" content="Tucson route health: cancels, voids, completion and sales by technician.">
+<meta name="robots" content="noindex, nofollow">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎯</text></svg>">
+<link rel="apple-touch-icon" href="assets/bill.jpg">
+<meta name="theme-color" content="#18402B">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&family=Lilita+One&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+<div id="banner"></div>
+<header class="hero">
+  <div class="hero-img" role="img" aria-label="Bullseye Bill, a pest control technician in a green shirt, giving a thumbs up under a Bullseye Board sign, in front of a desert home and a white service truck"></div>
+  <div class="wrap hero-inner">
+    <h1 class="sr-only">Bullseye Board</h1>
+    <p class="hero-tag">Tucson route health</p>
+  </div>
+</header>
+<div class="band">
+  <div class="wrap">
+    <div class="controls">
+      <div class="seg" role="group" aria-label="Section" id="secSeg">
+        <button type="button" data-sec="route">Route</button><button type="button" data-sec="sales">Sales</button><button type="button" data-sec="cancel">Cancellations</button>
+      </div>
+      <div class="seg" role="group" aria-label="Period">
+        <button type="button" data-mode="month">Month</button><button type="button" data-mode="ytd">Year to date</button>
+      </div>
+    </div>
+    <div class="controls">
+      <select id="monthSel" aria-label="Month"></select>
+      <span class="spacer"></span>
+      <button class="btn" id="presentBtn" type="button">Present</button>
+      <button class="btn primary admin" id="uploadBtn" type="button">Upload reports</button>
+    </div>
+    <div class="controls adminbar" hidden>
+      <button class="btn" id="openJson" type="button">Open board.json</button>
+      <input type="file" id="jsonFile" accept=".json,application/json" hidden>
+      <label class="incl"><input type="checkbox" id="inclNames"> Include customer names</label>
+      <span class="spacer"></span>
+      <button class="btn primary" id="exportBtn" type="button">Download board.json</button>
+    </div>
+  </div>
+</div>
+<main class="wrap"><div id="content"></div></main>
+
+<dialog id="upDlg" aria-labelledby="upTitle">
+  <div class="dhead"><h2 id="upTitle">Upload reports</h2><button class="x" type="button" data-close aria-label="Close">×</button></div>
+  <div class="dbody">
+    <label class="drop">
+      Choose one or more exports. Each is recognized automatically:
+      customer list (service setup list), cancel detail, sales details, route completion details, open orders, or the employment list.
+      <input type="file" id="upFile" accept=".xlsx,.xls,.xlsm,.csv" multiple>
+    </label>
+    <div class="filelist" id="fileList"></div>
+    <div class="actions"><button class="go" type="button" id="saveUp" disabled>Save to board</button><span class="status" id="upStatus"></span></div>
+    <p class="sub">Reports are read in this browser only. Nothing is published until you download board.json and commit it.</p>
+  </div>
+</dialog>
+
+<dialog id="goalDlg" aria-labelledby="goalTitle">
+  <div class="dhead"><h2 id="goalTitle">Monthly sales goals</h2><button class="x" type="button" data-close aria-label="Close">×</button></div>
+  <div class="dbody" id="goalBody"></div>
+</dialog>
+
+<dialog id="techDlg" aria-labelledby="techTitle">
+  <div class="dhead"><h2 id="techTitle"></h2><button class="x" type="button" data-close aria-label="Close">×</button></div>
+  <div class="dbody" id="techBody"></div>
+</dialog>
+<script src="js/app.js"></script>
+</body>
+</html>
