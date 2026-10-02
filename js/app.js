@@ -435,11 +435,12 @@ function renderYTD(c){
   } else if(sec==='sales'){
     const S=computeSales(ytdEnd(),'ytd'); if(!S){ c.innerHTML=`<div class="empty"><h2>No sales details for ${esc(periodLabel())}</h2></div>`; return; }
     const B=S.B, isVal=S.unit!=='accounts';
-    parts.push(kpiStrip([...dorTile(S.dor),...(S.hasGoals?[['Salespeople vs. budget',B.goalPct!=null?pct1(B.goalPct):'—',`${money(B.captured)} of ${money(B.budget)} · ${S.budMonths.length} budgeted month${S.budMonths.length===1?'':'s'}`,B.goalPct!=null?`<span class="pb ${B.goalPct>=S.exp*100?'ok':'no'}">${B.goalPct>=S.exp*100?'ON PACE':'OFF PACE'}</span>`:'']]:[]),
+    parts.push(kpiStrip([...dorTile(S.dor),...(S.hasGoals?[['Salespeople vs. budget',B.goalPct!=null?pct1(B.goalPct):'—',`${money(B.captured)} of ${money(B.budget)} · ${S.budMonths.length} budgeted month${S.budMonths.length===1?'':'s'}`,B.goalPct!=null?`<span class="pb ${B.goalPct>=100?'ok':'no'}">${B.goalPct>=100?'BUDGET MET':'BUDGET MISSED'}</span>`:'']]:[]),
       ['Recurring sold',money(B.recVal),`${B.rec} setups`],['One-time & initial sold',money(B.otAll),`${B.ot} jobs + ${money(B.ex)} excess initial`],
       ...(S.cancels!=null?[['Net setups',fmt('netGain',B.rec-S.cancels),`${B.rec} added · ${S.cancels} cancelled`]]:[])],'sales'));
-    parts.push(`<p class="periodline">${esc(periodLabel())} · branch only</p>`);
-    const ms=goalMonths(ytdEnd(),'ytd').filter(m=>state.months[m]?.sales);
+    { const closed=goalMonths(ytdEnd(),'ytd').filter(m=>m<curYM()); const last=closed[closed.length-1];
+      parts.push(`<p class="periodline">${last?`${last.slice(0,4)} year to date, January through ${esc(monthName(last,true))} (closed months)`:'No closed months yet this year'} · branch only · ${esc(monthName(curYM()))} is tracked on pace in the Month view</p>`); }
+    const ms=goalMonths(ytdEnd(),'ytd').filter(m=>state.months[m]?.sales&&m<curYM());
     const byM=m=>Object.values(state.months[m].sales).reduce((a,v)=>({rec:a.rec+(v.rec||0),recVal:a.recVal+(v.recVal||0),ot:a.ot+(v.ot||0),otRev:a.otRev+(v.otRev||0)+(v.ex||0)}),{rec:0,recVal:0,ot:0,otRev:0});
     parts.push(dorHTML(S.dor));
     parts.push(`<h3>By month</h3>`+rowsTable(['Month','Recurring','Recurring $/yr','One-time','One-time & initial $'],ms.map(m=>{const x=byM(m);return [monthName(m,true),x.rec,money(x.recVal),x.ot,money(x.otRev)];})));
@@ -642,8 +643,17 @@ function salesStatus(r){
 function sblank(id,display,status,emp){ return {id,display,status,emp,rec:0,recVal:0,recTotal:0,ot:0,otRev:0,ex:0,early:0,spc:0,byM:{}}; }
 // Branch sales against the Power BI DOR budget, for the months that budget covers
 function dorCompare(month,mode){
-  const D=state.roster.dor||{}, e=mode==='month'?D[month]:D.ytd;
-  if(!e) return null;
+  const D=state.roster.dor||{}, cur=curYM();
+  let e=mode==='month'?D[month]:D.ytd;
+  if(!e) return mode==='month'&&month===cur&&D.ytd?{missing:'month',month}:null;
+  if(mode==='ytd'&&e.months.includes(cur)){
+    // the export includes the month under way: remove that month's budget so year to date is closed months only
+    const cm=D[cur];
+    if(!cm) return {missing:'subtract',month:cur};
+    const sub=(a,b)=>{ const o={}; for(const k in a) o[k]=(a[k]||0)-((b&&b[k])||0); return o; };
+    const byClass={}; for(const [c,v] of Object.entries(e.byClass||{})) byClass[c]=sub(v,cm.byClass?.[c]);
+    e={...e,months:e.months.filter(m=>m!==cur),total:sub(e.total,cm.total),byClass};
+  }
   const cap={total:0,rec:0,ot:0}, byClass={};
   for(const m of e.months){ const d=state.months[m]; if(!d) continue;
     if(d.salesClass) for(const [c,v] of Object.entries(d.salesClass)){ cap.total+=v.total; cap.rec+=v.rec; cap.ot+=v.ot+v.ex; const b=byClass[c]||(byClass[c]={cap:0}); b.cap+=v.total; }
@@ -658,8 +668,10 @@ function dorCompare(month,mode){
 // roster.budgets = { 'YYYY-MM': { personId: { name, rec, ot } } }  (dollars; recurring = annual value)
 function budgetFor(id,m){ return state.roster.budgets?.[m]?.[id]||null; }
 function hasAnyBudget(id){ return Object.values(state.roster.budgets||{}).some(b=>b&&b[id]); }
+const curYM=()=>todayStr().slice(0,7);
 function computeSales(month,mode){
-  const gm=goalMonths(month,mode);
+  // Year to date covers closed months only; the month under way is tracked on its own, on pace / off pace
+  const gm=goalMonths(month,mode).filter(m=>mode==='month'||m<curYM());
   const withData=gm.filter(m=>state.months[m]?.sales);
   if(!withData.length) return null;
   const stale=withData.some(m=>state.months[m].sources?.sales?.by!=='salesperson');
@@ -726,6 +738,7 @@ function computeSales(month,mode){
   return {board:by('board'),termed:by('termed'),outside:by('outside'),staff:by('staff'),main:by('main'),other:by('other'),B,exp,n:gm.length,budMonths,unit:'value',stale,cancels,hasGoals:budMonths.length>0,dor:dorCompare(month,mode)};
 }
 function dorTile(D){
+  if(D&&D.missing) return [['Branch vs. DOR budget','—',D.missing==='month'?`upload ${monthName(D.month,true)}’s DOR budget (filtered to that month) to track it`:`upload ${monthName(D.month,true)}’s DOR budget so it can be taken out of year to date`]];
   if(!D||D.pct==null) return [];
   const span=D.months.length===1?monthName(D.months[0],true):`${monthName(D.months[0],true)}–${monthName(D.months[D.months.length-1],true)}`;
   const ok=D.pct>=D.exp*100, done=D.exp>=1;
@@ -733,6 +746,7 @@ function dorTile(D){
 }
 function dorHTML(D){
   if(!D) return '';
+  if(D.missing) return `<h3>Branch vs. DOR sales budget</h3><p class="sub">${D.missing==='month'?`To track ${esc(monthName(D.month))} on pace, export the DOR sales budget filtered to that month only and upload it.`:`The DOR file includes ${esc(monthName(D.month))}, which is still under way. Upload ${esc(monthName(D.month))}’s DOR budget on its own (filtered to that month) and year to date will exclude it automatically. Or export the year-to-date budget without the current month.`}</p>`;
   const span=D.months.length===1?monthName(D.months[0]):`${monthName(D.months[0])} – ${monthName(D.months[D.months.length-1])}`;
   const rows=Object.entries(D.byClass).filter(([c,v])=>(v.budget||0)>0||(v.cap||0)>0).sort((a,b)=>(b[1].budget||0)-(a[1].budget||0))
     .map(([c,v])=>[esc(c),money(v.cap),money(v.budget||0),v.budget?pct1(v.cap/v.budget*100):'—']);
@@ -791,7 +805,7 @@ function renderSales(c){
       const big=sk==='score'?(t.score??'—'):fmt(sk,t[sk]);
       return `<li><button type="button" class="lane ${goalBand(t.goalPct,S.exp)}" data-sp="${esc(t.id)}">
         <span class="rank">${t[sk]==null?'–':i+1}</span>
-        <span class="who"><span class="name">${esc(t.display)}</span><span class="chips">${sk==='proj'&&projecting?`<span><b>${money(t.overall)}</b> so far</span>`:''}${sk!=='score'&&t.score!=null?`<span>score <b>${t.score}</b></span>`:''}<span><b>${t.rec}</b> recurring</span><span><b>${money(t.recVal)}</b>/yr</span><span><b>${t.ot}</b> one-time</span>${t.earlyRate!=null?`<span><b>${t.early}</b> first-year cancels</span>`:''}</span></span>
+        <span class="who"><span class="name">${esc(t.display)}</span><span class="chips">${t.goalPct!=null?`<span>${S.exp>=1?`<span class="pb ${t.goalPct>=100?'ok':'no'}">${t.goalPct>=100?'BUDGET MET':'BUDGET MISSED'}</span>`:`<span class="pb ${t.goalPct>=S.exp*100?'ok':'no'}">${t.goalPct>=S.exp*100?'ON PACE':'OFF PACE'}</span>`}</span>`:''}${sk==='proj'&&projecting?`<span><b>${money(t.overall)}</b> so far</span>`:''}${sk!=='score'&&t.score!=null?`<span>score <b>${t.score}</b></span>`:''}<span><b>${t.rec}</b> recurring</span><span><b>${money(t.recVal)}</b>/yr</span><span><b>${t.ot}</b> one-time</span>${t.earlyRate!=null?`<span><b>${t.early}</b> first-year cancels</span>`:''}</span></span>
         <span class="score"><span class="num">${big}</span></span>
         <span class="goals">${goalBar('Total',t.budget?t.captured:t.overall,t.budget,t.goalPct,S.exp,true)}${goalBar('Recurring',t.recGoal?t.recCap:t.recAmt,t.recGoal,t.recPct,S.exp,true)}${goalBar('One-time & initial',t.otGoal?t.otCap:t.otAll,t.otGoal,t.otPct,S.exp,true)}</span></button></li>`;
     }).join('')}</ol>${sourcesBlock()}`;
