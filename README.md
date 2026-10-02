@@ -37,7 +37,7 @@ On a phone, open the link and choose **Add to Home Screen** for an app icon.
 
 1. Open `https://<your-user>.github.io/bullseye-board/?admin`.
 2. Click **Upload reports** and select your exports (several at once is fine). Each report is recognized automatically. Click **Save to board**.
-3. Set sales goals or move people on or off the board if needed.
+3. Enter monthly salesperson budgets (Sales → Sales budgets) or move people on or off the board if needed. The branch budget comes from the Power BI DOR sales budget export (upload it with the other reports).
 4. Click **Download board.json**.
 5. On GitHub, open the `data` folder, choose **Add file → Upload files**, drop in the new `board.json` (it replaces the old one), and commit.
 
@@ -53,6 +53,7 @@ The admin page starts from whatever `data/board.json` is live, so you only uploa
 | Open Orders (Service Order List) | PestPac | TUC, work dates through month end | 1st of each month |
 | Service Setup List (customer list) | PestPac | TUC, status Active or Both | Monthly |
 | Employment List | HR | Any (only Tucson is used) | When people are hired, termed or change roles |
+| DOR Sales Budget | Power BI (DOR) | TUC; one month, or year to date | When budgets are set or change |
 
 Re-uploading is safe: year-to-date files replace the months they cover, and duplicate invoices, orders and setups are removed every time.
 
