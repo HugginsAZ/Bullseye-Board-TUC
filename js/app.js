@@ -489,7 +489,7 @@ function branchBody(sec){
     body.push(`<h3>Sales</h3>`+rowsTable(['','Count','Value'],[['Recurring sales',B.rec,money(B.recVal)+' / yr'],['One-time sales',B.ot,money(B.otRev)]]));
     if(S.hasGoals) body.push(`<h3>Captured vs. budget</h3><p class="sub">${money(B.captured)} captured of ${money(B.budget)} budgeted (${pct1(B.goalPct)}), combining everyone with a budget${state.mode==='ytd'?` across the ${S.budMonths.length} budgeted month${S.budMonths.length===1?'':'s'}`:''}.</p><span class="goals" style="display:grid">${goalBar('Recurring',B.gRec,B.recGoal,B.recPct,S.exp,isVal)}${goalBar('One-time',B.gOt,B.otGoal,B.otPct,S.exp,true)}</span>`);
     if(S.cancels!=null) body.push(`<h3>Net change in setups</h3><p>${B.rec} recurring added − ${S.cancels} cancelled = <b>${fmt('netGain',B.rec-S.cancels)}</b></p>`);
-    if(B.early) body.push(`<p class="sub">${B.early} cancellations were first-year customers.</p>`);
+    if(B.early) body.push(`<h3>Sale quality</h3><p class="sub">${B.early} first-year cancellations (chargebacks) on ${B.rec} recurring sales. This feeds the sale-quality part of the sales score only; it isn’t subtracted from captured sales.</p>`);
     const names=l=>l.map(t=>`<button type="button" class="linkish" data-sp="${esc(t.id)}">${esc(t.display)}</button>`).join(', ');
     const grp=[['Main branch',S.main],['Techs and staff without a goal',S.staff],['Not on the Tucson list (inside sales, other branches)',S.outside],['Termed',S.termed],['Other',S.other]].filter(g=>g[1].length);
     if(grp.length&&!ytd) body.push(`<h3>Counted in the branch total, not ranked</h3>${grp.map(([l,list])=>`<p><b>${l}:</b> ${names(list)}</p>`).join('')}`);
@@ -657,6 +657,8 @@ function computeSales(month,mode){
       for(const f of ['rec','recVal','ot','otRev']) bm[f]+=v[f]||0;
     }
   }
+  // Sale quality (chargebacks): first-year cancels on each salesperson's accounts. Used only in the sales score;
+  // cancellations are never subtracted from captured sales dollars.
   let hasQ=false;
   for(const m of gm){ const sc=state.months[m]?.spCancel; if(!sc) continue; hasQ=true;
     for(const [k,v] of Object.entries(sc)){ const r=resolveKey(k), st=salesStatus(r); const t=P[r.id]||(P[r.id]=sblank(r.id,r.display,st,r.emp)); t.early+=v.early||0; t.spc+=v.n||0; } }
@@ -681,7 +683,7 @@ function computeSales(month,mode){
   const all=Object.values(P); all.forEach(derive);
   const B=sblank('branch','Branch total','branch',null);
   for(const t of all) for(const f of ['rec','recVal','recTotal','ot','otRev','early','spc']) B[f]+=t[f];
-  // Sales score: 45 pts recurring vs budget pace, 35 pts one-time vs budget pace, 20 pts first-year cancels on their sales vs branch
+  // Sales score: 45 pts recurring vs budget pace, 35 pts one-time vs budget pace, 20 pts sale quality (first-year cancels vs branch rate)
   const branchEarly=B.rec?B.early/B.rec:0, ep=Math.max(exp,0.01);
   for(const t of all){
     const parts=[];
@@ -700,7 +702,7 @@ function computeSales(month,mode){
   B.recPct=B.recGoal?B.gRec/B.recGoal*100:null; B.otPct=B.otGoal?B.gOt/B.otGoal*100:null;
   B.budget=(B.recGoal||0)+(B.otGoal||0)||null; B.captured=B.gRec+B.gOt; B.goalPct=B.budget?B.captured/B.budget*100:null;
   B.overall=B.recVal+B.otRev; B.proj=mode==='month'&&exp>0&&exp<1?B.overall/exp:B.overall;
-  const RC=compute(month,mode); const cancels=RC&&RC.has.cancel?RC.B.c:null;
+  const cancels=null; // cancellations belong to the route views, not sales
   const by=s=>all.filter(t=>t.status===s);
   return {board:by('board'),termed:by('termed'),outside:by('outside'),staff:by('staff'),main:by('main'),other:by('other'),B,exp,n:gm.length,budMonths,unit:'value',stale,cancels,hasGoals:budMonths.length>0};
 }
@@ -740,7 +742,7 @@ function renderSales(c){
       ...(S.cancels!=null?[['Net setups',fmt('netGain',B.rec-S.cancels),`${B.rec} added · ${S.cancels} cancelled`]]:[])],'sales')}
     ${S.hasGoals&&B.goalPct!=null?bill(B.goalPct>=S.exp*100?`The sales team has captured ${pct1(B.goalPct)} of budget, right where it should be by now. Keep stacking setups.`:`The sales team has captured ${pct1(B.goalPct)} of budget; about ${pct1(S.exp*100)} would be on pace by today.`):''}
     <p class="periodline">${esc(periodLabel())} · credit goes to the salesperson on each sale${S.exp<1?' · the black mark on each bar is where they should be today':''}</p>
-    ${sk==='score'?'<p class="hint">Sales score out of 100: 45 points for recurring dollars captured against budget, 35 for one-time dollars captured against budget (both measured against where they should be by today), and 20 for keeping first-year cancellations on their sales at or below the branch rate.</p>':''}
+    ${sk==='score'?'<p class="hint">Sales score out of 100: 45 points for recurring dollars captured against budget, 35 for one-time dollars captured against budget (both measured against where they should be by today), and 20 for sale quality: keeping first-year cancellations (chargebacks) on their sales at or below the branch rate. Cancellations are never subtracted from captured sales.</p>':''}
     <div class="toolrow">${goalsBtn}${!S.hasGoals?'<span class="sub">No budget for this month yet. Add one to track captured sales against budgeted dollars.</span>':''}</div>
     <nav class="tabs" aria-label="Rank by">${sorts.map(x=>`<button type="button" data-sort="${x.key}" aria-pressed="${x.key===sk}">${x.label}</button>`).join('')}</nav>
     ${sk==='proj'?`<p class="hint">Overall is recurring annual value plus one-time sales${projecting?`, projected to month end at the current pace (${pct1(S.exp*100)} of the month’s workdays are done)`:''}. Ranked best to worst.</p>`:''}
