@@ -62,7 +62,7 @@ function ym(d){ const x=new Date(d.getTime()+6*3600e3); return x.getFullYear()+'
 function ymd(d){ const x=new Date(d.getTime()+6*3600e3); return x.getFullYear()+'-'+pad(x.getMonth()+1)+'-'+pad(x.getDate()); }
 function monthName(m,short){ const [y,mo]=m.split('-').map(Number); return new Date(y,mo-1,15).toLocaleDateString(undefined,short?{month:'short'}:{month:'long',year:'numeric'}); }
 function num(v){ if(typeof v==='number') return isFinite(v)?v:null; if(v==null) return null; const s=String(v).replace(/[,$\s]/g,''); if(!s) return null; const f=parseFloat(s); return isNaN(f)?null:f; }
-function pct1(v){ return v==null?'—':v.toFixed(1)+'%'; }
+function pct1(v){ return v==null?'—':(Math.abs(v)<0.05?0:v).toFixed(1)+'%'; }
 function pct(v){ return v==null?'—':(Math.abs(v)<10?v.toFixed(1):Math.round(v))+'%'; }
 function money(v){ if(v==null) return '—'; const a=Math.abs(v); return (v<0?'-':'')+'$'+(a>=1e6?(a/1e6).toFixed(2)+'M':a>=100000?Math.round(a/1000)+'k':a>=10000?(a/1000).toFixed(1)+'k':Math.round(a).toLocaleString()); }
 function fmt(k,v){ if(v==null) return '—'; if(k==='recAmt') return state.roster.goalUnit==='accounts'?Math.round(v).toLocaleString():money(v); if(PCT.includes(k)) return pct1(v); if(MONEY.includes(k)) return money(v); if(k==='netGain') return (v>0?'+':'')+Math.round(v); return Math.round(v).toLocaleString(); }
@@ -223,7 +223,8 @@ function compute(month,mode){
       t.cByM[m]=(t.cByM[m]||0)+v.n; if(d.route) t.cR+=v.n; } }
     if(d.growth){ has.growth=true; for(const [k,v] of Object.entries(d.growth)){ const t=get(k); t.adds+=v.rec||0; t.otUnits+=v.ot||0; } }
     else if(d.sales) staleGrowth=true;
-    if(d.route){ has.route=true; for(const [k,v] of Object.entries(d.route)){ const t=get(k); t.done+=v.done||0; t.voided+=v.voided||0; t.open+=v.open||0; t.voidAmt+=v.voidAmt||0; t.cvN+=v.cv||0; t.cvAmt+=v.cvAmt||0;
+    const openCounts=mode==='month'||monthElapsed(m)>=1; // year to date: open stops in an unfinished month aren't misses yet
+    if(d.route){ has.route=true; for(const [k,v] of Object.entries(d.route)){ const t=get(k); t.done+=v.done||0; t.voided+=v.voided||0; if(openCounts) t.open+=v.open||0; t.voidAmt+=v.voidAmt||0; t.cvN+=v.cv||0; t.cvAmt+=v.cvAmt||0;
         for(const [r,n] of Object.entries(v.reasons||{})) t.vReasons[r]=(t.vReasons[r]||0)+n; if(d.cancel) t.dR+=v.done||0; }
       const ns=d.sources?.route?.ns; if(ns){ cross.nsN+=ns.n||0; cross.nsAmt+=ns.amt||0; }
       // Cross-check: route services voided as CANCELED against the cancel detail
@@ -573,7 +574,7 @@ function renderCancel(c){
       ...(R.B.cancelPct!=null?[['Cancel %',pct1(R.B.cancelPct),`of ${R.B.startBase.toLocaleString()} active at the start`,'','cancel']]:[]),
       ['Production lost',money(R.B.prod),'annual value'],
       ...(R.B.age.reduce((a,b)=>a+b,0)?[['First-year customers',pct(R.B.age[0]/R.B.age.reduce((a,b)=>a+b,0)*100),'of cancellations']]:[])],'route')}
-    ${(()=>{ const tot=R.B.age.reduce((a,b)=>a+b,0); if(!tot) return ''; const fy=R.B.age[0]/tot*100; const bA=R.B.bAge, bs=bA?bA[0]/bA.reduce((a,b)=>a+b,0)*100:null; return bill(`${pct1(fy)} of this month’s cancels were first-year customers${bs?`, who make up only ${pct1(bs)} of our active setups`:''}. Hitting the target early in a customer’s first year is where routes are won.`); })()}
+    ${(()=>{ const tot=R.B.age.reduce((a,b)=>a+b,0); if(tot<5) return ''; const fy=R.B.age[0]/tot*100; const bA=R.B.bAge, bs=bA?bA[0]/bA.reduce((a,b)=>a+b,0)*100:null; return bill(`${pct1(fy)} of this month’s cancels were first-year customers${bs?`, who make up only ${pct1(bs)} of our active setups`:''}. Hitting the target early in a customer’s first year is where routes are won.`); })()}
     <p class="periodline">${esc(periodLabel())} · termed employees, main branch, staff and open routes count in the branch total but aren’t ranked</p>
     <h3>Share of cancellations by tech</h3>
     <div class="toolrow"><div class="seg2" role="group" aria-label="Show"><button type="button" data-cxv="pct" aria-pressed="${v==='pct'}">% of branch</button><button type="button" data-cxv="count" aria-pressed="${v==='count'}">Count</button></div>
@@ -871,7 +872,7 @@ function billTech(t,R){
   if(rank===1) wins.push('Top of the board this month. That’s a bullseye!');
   else if(rank>0&&rank<=3) wins.push(`${ordinal(rank)} on the board. Great work.`);
   const compGoal=TARGET.completion*Math.min(el,1);
-  if(t.comp!=null&&t.comp>=compGoal) wins.push(`Stops are on target at ${pct1(t.comp)}.`);
+  if(t.comp!=null&&t.comp>=compGoal) wins.push(el<1?`Stops are on pace: ${pct1(t.comp)} done so far.`:`Stops finished on target at ${pct1(t.comp)}.`);
   if(t.loss!=null&&t.lossProj<TARGET.loss) wins.push(`Cancels plus voids are just ${pct1(t.loss)}, inside the ${TARGET.loss}% line.`);
   if(t.netGain>0) wins.push(`Your route grew by ${t.netGain} setup${t.netGain>1?'s':''}.`);
   if(t.voided===0&&t.completed>0) wins.push('Zero voids. Every stop counted.');
