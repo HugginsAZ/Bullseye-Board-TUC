@@ -11,8 +11,9 @@ const FIELD_DEPT=/^operations,\s*field/i;
 const NON_PERSON=/open tech|subcontract|name not found|administrator|employee,\s*inactive|unassigned|^code\|/i;
 // First month shown in the month picker (earlier months still feed year-to-date branch numbers)
 const START_MONTH='2026-09';
-// Monthly targets: complete 98.5% of stops; cancel % no higher than 1.7% and void % no higher than 1.5% (each of total stops)
-const TARGET={completion:98.5,cancel:1.7,void:1.5}; // cancel % and void % are each measured against total stops for the month
+// Monthly targets: complete 98.5% of stops; cancel % no higher than 1.7% (gross dollars: cancelled annual $ ÷ active annual $,
+// the company Net Gain report's Cancellation %); void % no higher than 1.5% of total stops
+const TARGET={completion:98.5,cancel:1.7,void:1.5};
 // PestPac name changes: old name -> current name (lowercase "last|first")
 const ALIASES={'weisner|bill':'voss|bill'};
 // People whose numbers always go to the main branch total, never ranked
@@ -29,6 +30,7 @@ const SORTS={
     {key:'cancelShare',label:'Share of cancels',dir:1},
     {key:'voidRate',label:'Void %',dir:1},
     {key:'comp',label:'Completion %',dir:-1},
+    {key:'netGainVal',label:'Net gain $',dir:-1},
     {key:'netGain',label:'Net setup gain',dir:-1},
     {key:'adds',label:'Recurring adds',dir:-1},
   ],
@@ -42,7 +44,7 @@ const SORTS={
     {key:'otAll',label:'One-time & initial $',dir:-1},
   ],
 };
-const PCT=['comp','cancelPct','cancelRate','cancelShare','voidRate','pace','goalPct','recPct','otPct'], MONEY=['proj','overall','recVal','otRev','otAll','prod','leadVal','stopsProd'];
+const PCT=['comp','cancelPct','cancelRate','cancelShare','voidRate','pace','goalPct','recPct','otPct'], MONEY=['netGainVal','proj','overall','recVal','otRev','otAll','prod','leadVal','stopsProd'];
 
 const state={months:{},bases:{},locnames:{},roster:{employees:null,codes:{},termedSeen:{},show:{}},month:null,mode:'month',sec:'route',
   sort:{route:'health',sales:'proj'},cx:{view:'pct',who:''},db:null,canEdit:null,local:false,pending:[],arm:null};
@@ -63,10 +65,10 @@ function monthName(m,short){ const [y,mo]=m.split('-').map(Number); return new D
 function num(v){ if(typeof v==='number') return isFinite(v)?v:null; if(v==null) return null; const s=String(v).replace(/[,$\s]/g,''); if(!s) return null; const f=parseFloat(s); return isNaN(f)?null:f; }
 function pct1(v){ return v==null?'—':(Math.abs(v)<0.05?0:v).toFixed(1)+'%'; }
 // One decimal, but two when rounding would hide which side of a goal the number is on (1.54% vs 1.5%)
-function pctG(v,goal){ if(v==null) return '—'; return Math.abs(v-goal)<0.05&&Math.abs(v-goal)>1e-9?v.toFixed(2)+'%':pct1(v); }
+function pctG(v,goal){ if(v==null) return '—'; return (Math.abs(v-goal)<0.05&&Math.abs(v-goal)>1e-9)||(v>0&&v<1)?v.toFixed(2)+'%':pct1(v); } // small values keep two decimals, like the company report (0.18%)
 function pct(v){ return v==null?'—':(Math.abs(v)<10?v.toFixed(1):Math.round(v))+'%'; }
 function money(v){ if(v==null) return '—'; const a=Math.abs(v); return (v<0?'-':'')+'$'+(a>=1e6?(a/1e6).toFixed(2)+'M':a>=100000?Math.round(a/1000)+'k':a>=10000?(a/1000).toFixed(1)+'k':Math.round(a).toLocaleString()); }
-function fmt(k,v){ if(v==null) return '—'; if(k==='recAmt') return money(v); if(PCT.includes(k)) return pct1(v); if(MONEY.includes(k)) return money(v); if(k==='netGain') return (v>0?'+':'')+Math.round(v); return Math.round(v).toLocaleString(); }
+function fmt(k,v){ if(v==null) return '—'; if(k==='netGainVal') return (v>0?'+':v<0?'−':'')+money(Math.abs(v)); if(k==='recAmt') return money(v); if(PCT.includes(k)) return pct1(v); if(MONEY.includes(k)) return money(v); if(k==='netGain') return (v>0?'+':'')+Math.round(v); return Math.round(v).toLocaleString(); }
 const tc=s=>String(s||'').toLowerCase().replace(/(^|[\s\-'])([a-z])/g,(m,a,b)=>a+b.toUpperCase());
 const norm=s=>String(s||'').toLowerCase().replace(/[^a-z]/g,'');
 function firstMatch(a,b){ a=norm(a); b=norm(b); if(!a||!b) return false; if(a===b) return true; if((NICK[a]||a)===(NICK[b]||b)) return true; return a[0]===b[0]; }
@@ -81,11 +83,17 @@ function parseName(raw){
 function ordinal(n){ const s=['th','st','nd','rd'],v=n%100; return n+(s[(v-20)%10]||s[v]||s[0]); }
 function band(p){ return p==null?'c-none':p>=0.67?'c-good':p>=0.34?'c-mid':'c-low'; }
 function avg(a){ const v=a.filter(x=>x!=null); return v.length?v.reduce((s,x)=>s+x,0)/v.length:null; }
+// Company holidays (2026 holiday calendar). The floating holiday is personal, so it isn't on the list.
+// More dates can be added in update mode under Holidays; they're saved in board.json.
+const COMPANY_HOLIDAYS=['2026-01-01','2026-05-25','2026-07-03','2026-09-07','2026-11-26','2026-11-27','2026-12-24','2026-12-25'];
+function holidaySet(){ return new Set([...COMPANY_HOLIDAYS,...(state.roster?.holidays||[])]); }
+function isWorkday(dt,hol){ const wd=dt.getDay(); return wd>0&&wd<6&&!hol.has(dt.getFullYear()+'-'+pad(dt.getMonth()+1)+'-'+pad(dt.getDate())); }
+// Pace = workdays done through the data date ÷ all workdays in the month. Workdays are Mon–Fri minus company holidays.
 function workdayShare(month,asOf){
-  const [y,m]=month.split('-').map(Number), last=new Date(y,m,0).getDate();
+  const [y,m]=month.split('-').map(Number), last=new Date(y,m,0).getDate(), hol=holidaySet();
   const cut=asOf?new Date(asOf+'T12:00:00'):new Date();
   let total=0,done=0;
-  for(let d=1;d<=last;d++){ const dt=new Date(y,m-1,d,12); const wd=dt.getDay(); if(wd>0&&wd<6){ total++; if(dt<=cut) done++; } }
+  for(let d=1;d<=last;d++){ const dt=new Date(y,m-1,d,12); if(isWorkday(dt,hol)){ total++; if(dt<=cut) done++; } }
   return total?Math.max(done,1)/total:1;
 }
 
@@ -184,6 +192,15 @@ function baseAtStart(m,base){
     v=v-adds+canc; }
   return v;
 }
+// Active annual $ at the start of month m: today's customer list, rolled back with recurring $ started and $ cancelled since
+function monthStartedVal(d){ return d?.sales?Object.values(d.sales).reduce((a,x)=>a+(x.recVal||0),0):0; }
+function monthCancelVal(d){ return d?.cancel?Object.values(d.cancel).reduce((a,x)=>a+(x.prod||0),0):0; }
+function baseDollarsAtStart(m,base){
+  if(!base) return null; const snapM=base.asOf.slice(0,7);
+  let v=base.branch.annual;
+  for(const k of Object.keys(state.months).sort()){ if(k<m||k>snapM) continue; const d=state.months[k]; v=v-monthStartedVal(d)+monthCancelVal(d); }
+  return v;
+}
 /* ---------- aggregation ---------- */
 const monthIdx=m=>(+m.slice(0,4))*12+(+m.slice(5,7));
 function monthElapsed(m,asOf){ const now=todayStr().slice(0,7); if(m<now) return 1; if(m>now) return 0; return workdayShare(m,asOf&&asOf.slice(0,7)===m?asOf:todayStr()); }
@@ -192,7 +209,7 @@ function yearElapsed(month,ms,asOf){ return ms.length?(ms.length-1+monthElapsed(
 function paceBadge(kind,v,el,ytd){
   if(v==null) return '';
   if(!ytd&&!(el>0)) return '';
-  const final=!ytd&&el>=1, share=ytd?1:el;
+  const final=!ytd&&el>=1, share=ytd?(kind==='cancel'?el:1):el; // year to date: cancels add up month by month
   let ok;
   if(kind==='completion') ok=v>=TARGET.completion*share;
   else ok=v<=TARGET[kind==='cancel'?'cancel':'void']*share; // both build up as the month goes on
@@ -217,7 +234,7 @@ function compute(month,mode){
       (v.age||[]).forEach((x,i)=>t.age[i]+=x); (v.ageProd||[]).forEach((x,i)=>t.ageProd[i]+=x);
       for(const [r,n] of Object.entries(v.reasons||{})) t.reasons[r]=(t.reasons[r]||0)+n;
       t.cByM[m]=(t.cByM[m]||0)+v.n; if(d.route) t.cR+=v.n; } }
-    if(d.growth){ has.growth=true; for(const [k,v] of Object.entries(d.growth)){ const t=get(k); t.adds+=v.rec||0; t.otUnits+=v.ot||0; } }
+    if(d.growth){ has.growth=true; for(const [k,v] of Object.entries(d.growth)){ const t=get(k); t.adds+=v.rec||0; t.otUnits+=v.ot||0; if(v.recVal!=null){ t.addVal=(t.addVal||0)+v.recVal; has.growthVal=true; } } }
     else if(d.sales) staleGrowth=true;
     const openCounts=mode==='month'||monthElapsed(m)>=1; // year to date: open stops in an unfinished month aren't misses yet
     if(d.route){ has.route=true; for(const [k,v] of Object.entries(d.route)){ const t=get(k); t.done+=v.done||0; t.voided+=v.voided||0; if(openCounts) t.open+=v.open||0; t.voidAmt+=v.voidAmt||0; t.cvN+=v.cv||0; t.cvAmt+=v.cvAmt||0;
@@ -259,13 +276,17 @@ function compute(month,mode){
     // without open orders, every order on the route report (not-started already removed)
     t.newStops=has.open&&has.growth?(t.adds||0)+(t.otUnits||0):0; t.startStops=has.open?t.stops:null;
     t.stops=has.open?t.stops+t.newStops:has.route?(t.done+t.voided+t.cvN+t.open):null;
-    // Cancel % and void % are each a share of TOTAL STOPS for the period (company reporting), not stops completed.
-    // Year to date only counts cancels from months that have route data, so both sides cover the same months.
-    const cNum=mode==='month'?t.c:t.cR;
-    t.cancelPct=has.cancel&&t.stops?cNum/t.stops*100:null;
+    // Cancel % (company Net Gain report): annual $ cancelled ÷ active annual $ on the book at the start of the period.
+    // Techs: the annual $ on their route in the customer list, plus what cancelled, minus what started, this period.
+    // Without a customer list it falls back to cancels ÷ total stops.
+    if(base&&has.cancel){ const den=(t.bAnnual||0)+t.prod-(t.addVal||0); t.cancelPct=den>0?t.prod/den*100:null; t.bookStartVal=den; t.cancelBasis='dollars'; }
+    else { const cNum=mode==='month'?t.c:t.cR; t.cancelPct=has.cancel&&t.stops?cNum/t.stops*100:null; t.cancelBasis='stops'; }
+    // Void %: voided services ÷ total stops for the period
     t.voidRate=has.route&&t.stops?t.voided/t.stops*100:null;
     t.adds=has.growth?t.adds:null; t.otUnits=has.growth?t.otUnits:null;
     t.netGain=has.growth&&has.cancel?t.adds-t.c:null;
+    // Net gain $ = recurring annual $ started on the route − annual $ cancelled (company Net Gain report)
+    t.netGainVal=has.growthVal&&has.cancel?(t.addVal||0)-t.prod:null;
     t.comp=has.route&&t.stops?t.done/t.stops*100:null;
     t.pace=mode==='month'&&t.comp!=null&&el>0?t.comp/(TARGET.completion*el)*100:null;
     t.ahead=t.pace!=null?Math.round(t.done-t.stops*TARGET.completion/100*el):null;
@@ -273,24 +294,33 @@ function compute(month,mode){
   all.forEach(derive);
   B.bSetups=base?base.branch.setups:0; B.bCust=base?base.branch.customers:0; B.bAnnual=base?base.branch.annual:0; B.bAge=base?base.branch.age:null;
   derive(B);
-  // Customer-list base: still used for the Cancellations tab's year-to-date net cancel % (matches the BI net view)
-  if(base&&has.cancel){ const start=baseAtStart(ms[0],base); B.startBase=start; B.baseCancelPct=start>0?B.c/start*100:null; }
+  // Customer-list base: setups (for the Cancellations tab's net cancel %) and annual $ (for the company cancel %)
+  if(base&&has.cancel){ const start=baseAtStart(ms[0],base); B.startBase=start; B.baseCancelPct=start>0?B.c/start*100:null;
+    const sv=baseDollarsAtStart(ms[0],base); B.bookStartVal=sv; B.cancelPct=sv>0?B.prod/sv*100:null; B.cancelBasis='dollars'; }
   // Year to date (branch): net out new recurring setups and their annual value, the way the BI report does
   B.addVal=0; for(const m of ms){ const d=state.months[m]; if(d?.sales) for(const v of Object.values(d.sales)) B.addVal+=v.recVal||0; }
   B.netCancels=has.growth&&has.cancel?B.c-B.adds:null;
   B.netCancelPct=B.netCancels!=null&&B.startBase>0?B.netCancels/B.startBase*100:null;
   B.netProd=has.cancel&&B.addVal?B.prod-B.addVal:null;
+  B.netGainVal=has.cancel&&ms.some(m=>state.months[m]?.sales)?B.addVal-B.prod:null; // branch started $ comes from every sale, not just route techs
+  // started and cancelled $ by service class, against each class's active annual $
+  B.byClass={};
+  for(const m of ms){ const d=state.months[m]; if(!d) continue;
+    for(const [c,v] of Object.entries(d.salesClass||{})){ const x=B.byClass[c]||(B.byClass[c]={start:0,startN:0,canc:0,cancN:0}); x.start+=v.rec||0; }
+    for(const [c,v] of Object.entries(d.cancelClass||{})){ const x=B.byClass[c]||(B.byClass[c]={start:0,startN:0,canc:0,cancN:0}); x.canc+=v.prod||0; x.cancN+=v.n||0; } }
+  B.classReady=ms.some(m=>state.months[m]?.cancelClass);
   const board=all.filter(t=>t.status==='board');
   const cancelDim=board.some(t=>t.cancelPct!=null)?'cancelPct':'cancelShare';
-  const dims=[[cancelDim,-1],['voidRate',-1],['pace',1],['netGain',1],['adds',1],['otUnits',1],['rec',1],['recVal',1],['otRev',1],['leads',1],['completed',1],['stops',1],['cancelShare',-1],['cancelPct',-1],['book',1],['comp',1]];
+  const dims=[[cancelDim,-1],['voidRate',-1],['pace',1],['netGain',1],['netGainVal',1],['adds',1],['otUnits',1],['rec',1],['recVal',1],['otRev',1],['leads',1],['completed',1],['stops',1],['cancelShare',-1],['cancelPct',-1],['book',1],['comp',1]];
   board.forEach(t=>t.p={});
   for(const [f,dir] of dims){
     const vals=board.map(t=>t[f]).filter(v=>v!=null); if(vals.length<2) continue;
     for(const t of board){ if(t[f]==null) continue; const better=vals.filter(v=>dir<0?v>t[f]:v<t[f]).length, ties=vals.filter(v=>v===t[f]).length-1; t.p[f]=(better+ties/2)/(vals.length-1); }
   }
   // Health score: cancel %, void %, completion pace and net setup gain, equally weighted, each ranked against the team
-  for(const t of board){ const parts=[cancelDim,'voidRate','pace','netGain'].map(f=>t.p[f]).filter(v=>v!=null); t.health=parts.length?Math.round(avg(parts)*100):null; t.p.health=t.health==null?null:t.health/100; }
-  return {board,termed:all.filter(t=>t.status==='termed'),staff:all.filter(t=>t.status==='staff'),other:all.filter(t=>t.status==='other'),main:all.filter(t=>t.status==='main'),B,has,ms,el,asOf,cancelDim,staleGrowth,base,techRateOK,cross,ytd:mode==='ytd',stopsSrc:has.open?'open':'route'};
+  const netDim=board.some(t=>t.netGainVal!=null)?'netGainVal':'netGain';
+  for(const t of board){ const parts=[cancelDim,'voidRate','pace',netDim].map(f=>t.p[f]).filter(v=>v!=null); t.health=parts.length?Math.round(avg(parts)*100):null; t.p.health=t.health==null?null:t.health/100; }
+  return {board,termed:all.filter(t=>t.status==='termed'),staff:all.filter(t=>t.status==='staff'),other:all.filter(t=>t.status==='other'),main:all.filter(t=>t.status==='main'),B,has,ms,el,asOf,cancelDim,netDim:board.some(t=>t.netGainVal!=null)?'netGainVal':'netGain',staleGrowth,base,techRateOK,cross,ytd:mode==='ytd',stopsSrc:has.open?'open':'route'};
 }
 function sortList(list,key,sec){ const s=SORTS[sec].find(x=>x.key===key)||{dir:-1};
   return [...list].sort((a,b)=>{ if(a[key]==null&&b[key]==null) return a.display.localeCompare(b.display); if(a[key]==null) return 1; if(b[key]==null) return -1; return (a[key]-b[key])*s.dir||a.display.localeCompare(b.display); }); }
@@ -351,15 +381,16 @@ function renderBoard(c){
   if(state.mode==='month'){ const ms=Object.keys(state.months).filter(m=>m>=START_MONTH).sort(); const i=ms.indexOf(state.month); if(i>0) PR=compute(ms[i-1],'month'); }
   const prev=PR?Object.fromEntries(PR.board.map(t=>[t.id,t])):{};
   const tiles=routeTiles(R,false);
-  const hints={health:`Health score is each tech’s overall score out of 100, ranking them against the team on ${R.cancelDim==='cancelPct'?'cancel %':'share of cancels'}, void %, completion pace and net setup gain, equally weighted. 100 means best on every measure.`,
-    cancelPct:`Setups cancelled as a share of total stops for the ${state.mode==='month'?'month':'period'} (scheduled stops, not stops completed), the way company reporting measures it. Goal: no more than ${TARGET.cancel}% by month end.`,
+  const hints={health:`Health score is each tech’s overall score out of 100, ranking them against the team on ${R.cancelDim==='cancelPct'?'cancel %':'share of cancels'}, void %, completion pace and net gain, equally weighted. 100 means best on every measure.`,
+    cancelPct:R.B.cancelBasis==='dollars'?`Annual dollars cancelled as a share of the active annual dollars on the book at the start of the ${state.mode==='month'?'month':'year'}, the Cancellation % in the company Net Gain report. Goal: no more than ${TARGET.cancel}% by month end. For techs, the book is the annual dollars on their route in the customer list.`:`Setups cancelled as a share of total stops. Upload the customer list to switch to the company’s dollar-based cancel %. Goal: no more than ${TARGET.cancel}%.`,
     book:'Active service setups on each tech’s route today, from the customer list after removing duplicates.',
     cancelRate:'Cancellations on the tech’s accounts for every 100 services they completed. Lower is better.',
     cancelShare:'Each tech’s share of all branch cancellations.',
     voidRate:`Voided services as a share of total stops for the ${state.mode==='month'?'month':'period'} (scheduled stops, not stops completed). Goal: no more than ${TARGET.void}% by month end.`,
     comp:`Stops completed out of stops scheduled${R.stopsSrc==='open'?' (open orders at the start of the month)':' (every order on the route completion report; upload open orders on the 1st for the true starting count)'}. Goal: ${TARGET.completion}% by month end${R.el<1?`, so about ${(TARGET.completion*R.el).toFixed(1)}% by now`:''}.`,
     completed:'Services completed. Higher is better.', adds:'New recurring customers placed on the tech’s route, counted as units.', stops:'Stops on the books from the open orders report at the start of the month.',
-    netGain:'Recurring setups added on the tech’s route minus setups that cancelled. Above zero means the route grew.',
+    netGain:'Recurring setups started on the tech’s route minus setups that cancelled (counts).',
+    netGainVal:'Recurring annual dollars started on the tech’s route minus annual dollars cancelled, the Net Gain in the company report. Above zero means the route grew.',
     rec:'New recurring customers placed on the tech’s route.', recVal:'Annual value of new recurring customers on the route.',
     otRev:'One-time service revenue on the tech’s route.', leads:'Sales where the tech is credited as the lead.'};
   const maxVal=Math.max(...R.board.map(t=>Math.abs(t[sk]??0)),0.0001);
@@ -367,9 +398,10 @@ function renderBoard(c){
     if(sec==='route'){
       if(sk!=='health'&&t.health!=null) ch.push(`<span>health <b>${t.health}</b></span>`);
       if(t.stops!=null) ch.push(`<span class="${on('comp')}">${t.completed!=null?`<b>${t.completed.toLocaleString()}</b> of `:''}${t.stops.toLocaleString()} stops${t.comp!=null?` · <b>${pct1(t.comp)}</b>`:t.completed==null?' scheduled':''} ${paceBadge('completion',t.comp,R.el)}</span>`);
-      if(t.cancels!=null) ch.push(`<span class="${on('cancelPct')} ${on('cancelRate')} ${on('cancelShare')} clk" data-list="cancel" data-who="${esc(t.id)}" title="See each cancellation"><b>${t.cancels}</b> cancels${t.cancelPct!=null?` · <b>${pctG(t.cancelPct,TARGET.cancel)}</b> ${paceBadge('cancel',t.cancelPct,R.el,R.ytd)}`:''}</span>`);
+      if(t.cancels!=null) ch.push(`<span class="${on('cancelPct')} ${on('cancelRate')} ${on('cancelShare')} clk" data-list="cancel" data-who="${esc(t.id)}" title="See each cancellation"><b>${t.cancels}</b> cancels${t.cancelBasis==='dollars'&&t.prod?` (${money(t.prod)})`:''}${t.cancelPct!=null?` · <b>${pctG(t.cancelPct,TARGET.cancel)}</b> ${paceBadge('cancel',t.cancelPct,R.el,R.ytd)}`:''}</span>`);
       if(t.voidRate!=null) ch.push(`<span class="${on('voidRate')} clk" data-list="void" data-who="${esc(t.id)}" title="See each void"><b>${pctG(t.voidRate,TARGET.void)}</b> void ${paceBadge('void',t.voidRate,R.el,R.ytd)}</span>`);
-      if(t.netGain!=null) ch.push(`<span class="${on('netGain')} ${on('adds')}">net <b>${fmt('netGain',t.netGain)}</b> (${t.adds} added${t.otUnits?`, ${t.otUnits} one-time`:''})</span>`);
+      if(t.netGainVal!=null) ch.push(`<span class="${on('netGainVal')} ${on('netGain')} ${on('adds')}">net <b>${fmt('netGainVal',t.netGainVal)}</b> (${t.adds} started, ${t.cancels} cancelled)</span>`);
+      else if(t.netGain!=null) ch.push(`<span class="${on('netGain')} ${on('adds')}">net <b>${fmt('netGain',t.netGain)}</b> (${t.adds} added${t.otUnits?`, ${t.otUnits} one-time`:''})</span>`);
 
     } else {
       if(t.netGain!=null&&sk!=='netGain') ch.push(`<span>net <b>${fmt('netGain',t.netGain)}</b></span>`);
@@ -407,9 +439,10 @@ function renderBoard(c){
 function routeTiles(R,ytd){
   const B=R.B, el=R.el, t=[], L=!ytd&&state.mode==='month';
   if(B.stops!=null&&(B.completed!=null||!ytd)) t.push(['Stops completed',B.comp!=null?pct1(B.comp):'—',(B.completed!=null?`${B.completed.toLocaleString()} of ${B.stops.toLocaleString()} stops`:`${B.stops.toLocaleString()} stops scheduled · upload route completion to track`)+(B.newStops?` (${B.startStops.toLocaleString()} at the start + ${B.newStops} new sales)`:'')+` · goal ${TARGET.completion}%`,paceBadge('completion',B.comp,el,ytd)]);
-  if(B.cancels!=null) t.push(['Cancel %',B.cancelPct!=null?pctG(B.cancelPct,TARGET.cancel):'—',`${B.cancelPct!=null?(ytd?B.cR:B.c):B.cancels} setups cancelled of ${B.stops!=null?B.stops.toLocaleString():'—'} stops · goal ≤${TARGET.cancel}%${L?' · tap to see each':''}`,paceBadge('cancel',B.cancelPct,el,ytd),L?'cancel':null]);
+  if(B.cancels!=null) t.push(['Cancel %',B.cancelPct!=null?pctG(B.cancelPct,TARGET.cancel):'—',B.cancelBasis==='dollars'?`${money(B.prod)} cancelled of ${money(B.bookStartVal)} active annual $ · ${B.cancels} setup${B.cancels===1?'':'s'} · goal ≤${ytd?(TARGET.cancel*el).toFixed(1):TARGET.cancel}%${L?' · tap to see each':''}`:`${B.cancels} setups cancelled of ${B.stops!=null?B.stops.toLocaleString():'—'} stops · goal ≤${TARGET.cancel}%${L?' · tap to see each':''}`,paceBadge('cancel',B.cancelPct,el,ytd),L?'cancel':null]);
   if(B.voidRate!=null) t.push(['Void %',pctG(B.voidRate,TARGET.void),`${B.voided} void${B.voided===1?'':'s'} of ${B.stops.toLocaleString()} stops · ${money(B.voidAmt)} not billed · goal ≤${TARGET.void}%${L?' · tap to see each':''}`,paceBadge('void',B.voidRate,el,ytd),L?'void':null]);
-  if(B.netGain!=null) t.push(['Net setups',fmt('netGain',B.netGain),`${B.adds} added · ${B.c} cancelled`]);
+  if(B.netGainVal!=null) t.push(['Net gain',fmt('netGainVal',B.netGainVal),`${money(B.addVal)} started − ${money(B.prod)} cancelled · ${B.adds??'—'} started, ${B.cancels} cancelled`,`<span class="pb ${B.netGainVal>=0?'ok':'no'}">${B.netGainVal>=0?'GAINING':'SHRINKING'}</span>`]);
+  else if(B.netGain!=null) t.push(['Net setups',fmt('netGain',B.netGain),`${B.adds} added · ${B.c} cancelled`]);
   return t;
 }
 function renderYTD(c){
@@ -419,7 +452,7 @@ function renderYTD(c){
   if(sec==='route'){
     parts.push(kpiStrip(routeTiles(R,true),'route'));
     parts.push(billRoute(R,true));
-    parts.push(`<p class="periodline">${esc(periodLabel())} · branch only · goals: ${TARGET.completion}% of stops completed, cancel % and void % each no more than ${TARGET.cancel}% of total stops</p>`);
+    parts.push(`<p class="periodline">${esc(periodLabel())} · branch only · goals: ${TARGET.completion}% of stops completed, cancel % no more than ${TARGET.cancel}% of the book a month (${(TARGET.cancel*R.el).toFixed(1)}% so far this year), void % no more than ${TARGET.void}% of stops</p>`);
     parts.push((branchBody('route')||[]).join(''));
   } else if(sec==='sales'){
     const S=computeSales(ytdEnd(),'ytd'); if(!S){ c.innerHTML=`<div class="empty"><h2>No sales details for ${esc(periodLabel())}</h2></div>`; return; }
@@ -437,7 +470,7 @@ function renderYTD(c){
   } else {
     const B=R.B;
     parts.push(kpiStrip([['Cancelled',(B.cancels??0).toLocaleString(),`setups · ${B.adds??0} recurring added`],
-      ...(B.netCancelPct!=null?[['Net cancel %',pct1(B.netCancelPct),`${B.netCancels} net of ${B.startBase.toLocaleString()} active Jan 1 · ${pct1(B.cancelPct)} of stops`,'']]:B.cancelPct!=null?[['Cancel %',pct1(B.cancelPct),'of total stops','']]:[]),
+      ...(B.netCancelPct!=null?[['Net cancel %',pct1(B.netCancelPct),`${B.netCancels} net of ${B.startBase.toLocaleString()} active Jan 1 · gross ${pct1(B.cancelPct)} of the book in dollars`,'']]:B.cancelPct!=null?[['Cancel %',pct1(B.cancelPct),'of total stops','']]:[]),
       ...(B.netProd!=null?[['Net production',money(-B.netProd),`${money(B.prod)} lost − ${money(B.addVal)} added`]]:[['Production lost',money(B.prod),'annual value']])],'route'));
     parts.push(`<p class="periodline">${esc(periodLabel())} · branch only</p>`);
     const ms=R.ms.filter(m=>state.months[m]?.cancel||state.months[m]?.routeCV);
@@ -459,8 +492,9 @@ function billRoute(R,ytd){
   const B=R.B, el=R.el, hits=[], miss=[];
   if(!ytd&&!(el>0)) return '';
   if(B.comp!=null){ const g=TARGET.completion*(ytd?1:el); (B.comp>=g?hits:miss).push(B.comp>=g?`stops completed at ${pct1(B.comp)}`:`stops completed at ${pct1(B.comp)}, ${(g-B.comp).toFixed(1)} points under ${g.toFixed(1)}%`); }
-  for(const [kind,v,goal,lbl] of [['cancel',B.cancelPct,TARGET.cancel,'cancels'],['void',B.voidRate,TARGET.void,'voids']]){ if(v==null) continue; const g=goal*(ytd?1:Math.min(el,1)), ok=v<=g;
-    (ok?hits:miss).push(ok?`${lbl} at ${pctG(v,g)} of total stops`:!ytd&&el<1?`${lbl} at ${pctG(v,g)} of total stops, above the ${pctG(g,v)} that keeps the month under ${goal}%`:`${lbl} at ${pctG(v,g)} of total stops, over the ${goal}% goal`); }
+  for(const [kind,v,goal,lbl] of [['cancel',B.cancelPct,TARGET.cancel,'cancels'],['void',B.voidRate,TARGET.void,'voids']]){ if(v==null) continue; const g=goal*(ytd?(kind==='cancel'?el:1):Math.min(el,1)), ok=v<=g;
+    const of=kind==='cancel'&&B.cancelBasis==='dollars'?'of the book':'of total stops';
+    (ok?hits:miss).push(ok?`${lbl} at ${pctG(v,g)} ${of}`:!ytd&&el<1?`${lbl} at ${pctG(v,g)} ${of}, above the ${pctG(g,v)} that keeps the month under ${goal}%`:`${lbl} at ${pctG(v,g)} ${of}, over the ${+g.toFixed(2)}% goal`); }
   const n=hits.length+miss.length; if(!n) return '';
   const final=!ytd&&el>=1;
   const head=!miss.length?(final?'Bullseye! Every route goal was met.':'Right on target. Every route goal is on pace.'):!hits.length?(final?'We missed the target on every goal this month.':'We’re off target on every goal right now.'):`${hits.length} of ${n} on target.`;
@@ -494,13 +528,13 @@ function branchBody(sec){
         ['From the cancel detail',fromDetail],
         ...(B.cvExtra?[['Voided as CANCELED on the route report, not yet in the cancel detail',B.cvExtra]]:[]),
         ['<b>Total cancelled</b>',`<b>${B.c}</b>`],
-        ...(B.cancelPct!=null?[[`<b>Cancel %</b> (of ${B.stops.toLocaleString()} total stops; goal ≤${TARGET.cancel}%)`,`<b>${pctG(B.cancelPct,TARGET.cancel)}</b> ${paceBadge('cancel',B.cancelPct,R.el,ytd)}`]]:[]),
+        ...(B.cancelPct!=null&&B.cancelBasis==='dollars'?[['Annual $ cancelled',money(B.prod)],[`Active annual $ at the start of the ${ytd?'year':'month'}`,money(B.bookStartVal)],[`<b>Cancel %</b> (goal ≤${ytd?(TARGET.cancel*R.el).toFixed(1):TARGET.cancel}%)`,`<b>${pctG(B.cancelPct,TARGET.cancel)}</b> ${paceBadge('cancel',B.cancelPct,R.el,ytd)}`]]:B.cancelPct!=null?[[`<b>Cancel %</b> (of ${B.stops.toLocaleString()} total stops; goal ≤${TARGET.cancel}%)`,`<b>${pctG(B.cancelPct,TARGET.cancel)}</b> ${paceBadge('cancel',B.cancelPct,R.el,ytd)}`]]:[]),
         ...(ytd&&B.baseCancelPct!=null?[[`Gross cancel % of the ${B.startBase.toLocaleString()} setups active Jan 1`,pct1(B.baseCancelPct)]]:[]),
         ...(ytd&&B.netCancels!=null?[['Recurring setups added',`− ${B.adds}`],['<b>Net cancelled</b>',`<b>${B.netCancels}</b>`],['<b>Net cancel %</b> (matches the BI report)',`<b>${pct1(B.netCancelPct)}</b>`]]:[]),
         ['Annual production lost',money(B.prod)],
         ...(ytd&&B.netProd!=null?[['Annual value of recurring setups added',`− ${money(B.addVal)}`],['<b>Net production lost</b>',`<b>${money(B.netProd)}</b>`]]:[])]));
     }
-    if(!ytd&&(B.c||B.voided)) body.push(`<div class="actions"><button type="button" class="ghost" data-list="cancel" data-who="branch">See all ${B.c} cancellations</button><button type="button" class="ghost" data-list="void" data-who="branch">See all ${B.voided} voids</button></div>`);
+    if(!ytd&&(B.c||B.voided)) body.push(`<div class="actions"><button type="button" class="ghost" data-list="cancel" data-who="branch">See all ${B.c} cancellation${B.c===1?'':'s'}</button><button type="button" class="ghost" data-list="void" data-who="branch">See all ${B.voided} void${B.voided===1?'':'s'}</button></div>`);
     if(X.total&&!ytd) body.push(`<h3>Cross-check: route report vs. cancel detail</h3><p>${X.total} route services were voided with the reason CANCELED. ${X.matched} match a cancellation already in the cancel detail, so they aren’t counted twice.${X.unmatched.length?` ${X.unmatched.length} don’t match and were added to the cancel count:`:' All of them matched.'}</p>
       ${X.unmatched.length?`<ul class="plain">${X.unmatched.map(u=>`<li>Location ${esc(u.loc)} · ${esc(u.svc)} · ${esc(u.name)} · ${esc(monthName(u.m,true))}</li>`).join('')}</ul><p class="sub">These usually show up in the next cancel detail; once they do, they’re matched automatically.</p>`:''}`);
     if(B.voidRate!=null){
@@ -514,7 +548,12 @@ function branchBody(sec){
       ...(B.stopsProd?[['Value on the books',money(B.stopsProd)]]:[]),
       ...(B.completed!=null?[['Stops completed',B.completed.toLocaleString()],[`<b>Completed</b> (goal ${TARGET.completion}%)`,`<b>${pct(B.comp)}</b> ${paceBadge('completion',B.comp,R.el,ytd)}`]]:[]),
       ...(B.ahead!=null?[[B.ahead>=0?'Stops ahead of pace':'Stops behind pace',Math.abs(B.ahead)]]:[])]));
-    if(B.netGain!=null) body.push(`<h3>Net change in setups</h3><p>${B.adds} recurring added − ${B.c} cancelled = <b>${fmt('netGain',B.netGain)}</b>. ${B.otUnits} one-time jobs were also sold.</p>`);
+    if(B.netGainVal!=null) body.push(`<h3>Net gain</h3>`+rowsTable(['','Count','Annual $'],[['Recurring started',B.adds??'—',money(B.addVal)],['Cancelled',B.c,money(B.prod)],['<b>Net gain</b>',`<b>${B.adds!=null?fmt('netGain',B.adds-B.c):'—'}</b>`,`<b>${fmt('netGainVal',B.netGainVal)}</b>`]]));
+    else if(B.netGain!=null) body.push(`<h3>Net change in setups</h3><p>${B.adds} recurring added − ${B.c} cancelled = <b>${fmt('netGain',B.netGain)}</b>.</p>`);
+    if(R.base&&Object.keys(B.byClass).length){ const cls=R.base.branch.cls||{}; const keys=[...new Set([...Object.keys(B.byClass),...Object.keys(cls)])].sort();
+      body.push(`<h3>By service class</h3>`+(B.classReady?'':'<p class="sub">Re-upload the Cancel Detail to split cancels by service class.</p>')+rowsTable(['Class','Started $','Cancelled $','Net gain $','Cancels','Cancel %'],
+        keys.map(c=>{ const x=B.byClass[c]||{start:0,canc:0,cancN:0}, act=cls[c]?.annual||0, startBook=act+x.canc-x.start; return [esc(c),money(x.start),money(x.canc),fmt('netGainVal',x.start-x.canc),x.cancN||0,startBook>0&&B.classReady?pctG(x.canc/startBook*100,TARGET.cancel):'—']; })));
+    }
     if(!ytd) body.push(`<h3>Counted in the branch total, not ranked</h3><p class="sub">${excludedNote(R)}</p>`);
   }
   return body;
@@ -564,7 +603,7 @@ function renderCancel(c){
   c.innerHTML=`
     ${kpiStrip([
       ['Cancelled',(R.B.cancels??0).toLocaleString(),'setups · tap to see each',null,'cancel'],
-      ...(R.B.cancelPct!=null?[['Cancel %',pct1(R.B.cancelPct),`of ${R.B.stops.toLocaleString()} total stops · goal ≤${TARGET.cancel}%`,paceBadge('cancel',R.B.cancelPct,R.el),'cancel']]:[]),
+      ...(R.B.cancelPct!=null?[['Cancel %',pctG(R.B.cancelPct,TARGET.cancel),R.B.cancelBasis==='dollars'?`${money(R.B.prod)} of ${money(R.B.bookStartVal)} active annual $ · goal ≤${TARGET.cancel}%`:`of ${R.B.stops.toLocaleString()} total stops · goal ≤${TARGET.cancel}%`,paceBadge('cancel',R.B.cancelPct,R.el),'cancel']]:[]),
       ['Production lost',money(R.B.prod),'annual value'],
       ...(R.B.age.reduce((a,b)=>a+b,0)?[['First-year customers',pct(R.B.age[0]/R.B.age.reduce((a,b)=>a+b,0)*100),'of cancellations']]:[])],'route')}
     ${(()=>{ const tot=R.B.age.reduce((a,b)=>a+b,0); if(tot<5) return ''; const fy=R.B.age[0]/tot*100; const bA=R.B.bAge, bs=bA?bA[0]/bA.reduce((a,b)=>a+b,0)*100:null; return bill(`${pct1(fy)} of this month’s cancels were first-year customers${bs?`, who make up only ${pct1(bs)} of our active setups`:''}. Hitting the target early in a customer’s first year is where routes are won.`); })()}
@@ -621,7 +660,10 @@ async function removeSource(id){
 /* ---------- sales budgets: helpers ---------- */
 function todayStr(){ const d=new Date(); return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate()); }
 function goalMonths(month,mode){ if(mode==='month') return [month]; const y=month.slice(0,4), n=+month.slice(5); return Array.from({length:n},(_,i)=>y+'-'+pad(i+1)); }
-function expectedFor(m){ const now=todayStr(); if(m<now.slice(0,7)) return 1; if(m>now.slice(0,7)) return 0; return workdayShare(m,now); }
+// Share of the month's Mon–Fri workdays covered by the sales data (through the latest invoice date in the upload),
+// so pace isn't penalized when the board is viewed a few days after the last upload. Same rule as route pacing.
+function expectedFor(m){ const now=todayStr(); if(m<now.slice(0,7)) return 1; if(m>now.slice(0,7)) return 0;
+  const a=state.months[m]?.sources?.sales?.asOf; return workdayShare(m,a&&a.slice(0,7)===m?a:now); }
 function salesStatus(r){
   if(r.status==='main') return 'main';
   if(r.status==='other') return 'other';
@@ -927,18 +969,18 @@ function billTech(t,R){
   else if(rank>0&&rank<=3) wins.push(`${ordinal(rank)} on the board. Great work.`);
   const compGoal=TARGET.completion*Math.min(el,1);
   if(t.comp!=null&&t.comp>=compGoal) wins.push(el<1?`Stops are on pace: ${pct1(t.comp)} done so far.`:`Stops finished on target at ${pct1(t.comp)}.`);
-  if(t.cancelPct!=null&&t.cancelPct<=TARGET.cancel*Math.min(el,1)) wins.push(`Cancels are just ${pct1(t.cancelPct)} of your stops, inside the ${TARGET.cancel}% line.`);
+  if(t.cancelPct!=null&&t.cancelPct<=TARGET.cancel*Math.min(el,1)) wins.push(`Cancels are just ${pctG(t.cancelPct,TARGET.cancel)} of your ${t.cancelBasis==='dollars'?'book':'stops'}, inside the ${TARGET.cancel}% line.`);
   if(t.voidRate!=null&&t.voided>0&&t.voidRate<=TARGET.void*Math.min(el,1)) wins.push(`Voids are only ${pct1(t.voidRate)} of your stops.`);
-  if(t.netGain>0) wins.push(`Your route grew by ${t.netGain} setup${t.netGain>1?'s':''}.`);
+  if(t.netGainVal!=null?t.netGainVal>0:t.netGain>0) wins.push(t.netGainVal!=null?`Your route grew ${money(t.netGainVal)} in annual value.`:`Your route grew by ${t.netGain} setup${t.netGain>1?'s':''}.`);
   if(t.voided===0&&t.completed>0) wins.push('Zero voids. Every stop counted.');
   const final=el>=1;
   if(t.comp!=null&&t.comp<compGoal){ const need=Math.ceil(t.stops*compGoal/100-t.completed);
     focus.push({gap:(compGoal-t.comp)/(100-TARGET.completion),txt:final?`You finished ${need} stop${need===1?'':'s'} short of ${TARGET.completion}%. Getting to the open stops early in the week next month will close that gap.`:`You’re ${need} stop${need===1?'':'s'} from where you should be right now. Knocking out open stops early in the week keeps you ahead.`}); }
   if(t.cancelPct!=null&&t.cancelPct>TARGET.cancel*Math.min(el,1)){ const g=TARGET.cancel*Math.min(el,1);
-    focus.push({gap:(t.cancelPct-g)/TARGET.cancel,txt:`Cancels are ${pctG(t.cancelPct,TARGET.cancel)} of your stops${el<1?`, above the ${pctG(g,0)} that keeps you under ${TARGET.cancel}% this month`:` against a goal of ${TARGET.cancel}% or less`}. ${(topC&&CANCEL_TIP[topC[0]])||'Tap your cancel count to see each location and look for a pattern.'}`}); }
+    focus.push({gap:(t.cancelPct-g)/TARGET.cancel,txt:`Cancels are ${pctG(t.cancelPct,TARGET.cancel)} of your ${t.cancelBasis==='dollars'?'book':'stops'}${el<1?`, above the ${pctG(g,0)} that keeps you under ${TARGET.cancel}% this month`:` against a goal of ${TARGET.cancel}% or less`}. ${(topC&&CANCEL_TIP[topC[0]])||'Tap your cancel count to see each location and look for a pattern.'}`}); }
   if(t.voidRate!=null&&t.voidRate>TARGET.void*Math.min(el,1)){ const g=TARGET.void*Math.min(el,1);
     focus.push({gap:(t.voidRate-g)/TARGET.void,txt:`Voids are ${pctG(t.voidRate,TARGET.void)} of your stops${el<1?`, above the ${pctG(g,0)} that keeps you under ${TARGET.void}% this month`:` against a goal of ${TARGET.void}% or less`}. ${(topV&&VOID_TIP[topV[0]])||'Tap your void count to see each stop and look for a pattern.'}`}); }
-  if(t.netGain!=null&&t.netGain<0) focus.push({gap:0.2,txt:`Net setups are down ${Math.abs(t.netGain)}. Mentioning add-on services and asking happy customers for referrals helps win them back.`});
+  if(t.netGainVal!=null?t.netGainVal<0:(t.netGain!=null&&t.netGain<0)) focus.push({gap:0.2,txt:`${t.netGainVal!=null?`Net gain is ${fmt('netGainVal',t.netGainVal)}`:`Net setups are down ${Math.abs(t.netGain)}`}. Mentioning add-on services and asking happy customers for referrals helps win them back.`});
   const ageTot=t.age.reduce((a,b)=>a+b,0);
   if(ageTot>=3&&t.age[0]/ageTot>=0.34) focus.push({gap:0.1,txt:'Over a third of your cancels were first-year customers. Extra care on the first few visits pays off.'});
   focus.sort((a,b)=>b.gap-a.gap);
@@ -971,12 +1013,13 @@ function openTech(id){
   if(t.stops!=null) route.push(['Stops scheduled',t.stops.toLocaleString(),fmt('stops',ta('stops')),'']);
   if(t.completed!=null) route.push(['Stops completed',t.completed.toLocaleString(),fmt('completed',ta('completed')),'']);
   if(t.comp!=null) route.push([`Completion % (goal ${TARGET.completion}%)`,`${pct(t.comp)} ${paceBadge('completion',t.comp,R.el)}`,pct(ta('comp')),rank('comp','route')]);
-  if(t.cancelPct!=null) route.push([`Cancel % of total stops (goal ≤${TARGET.cancel}%)`,`${pctG(t.cancelPct,TARGET.cancel)} ${paceBadge('cancel',t.cancelPct,R.el)}<br><span class="sub">${t.cancels} of ${t.stops} stops</span>`,pct1(ta('cancelPct')),rank('cancelPct','route')]);
+  if(t.cancelPct!=null) route.push([`Cancel % (goal ≤${TARGET.cancel}%)`,`${pctG(t.cancelPct,TARGET.cancel)} ${paceBadge('cancel',t.cancelPct,R.el)}<br><span class="sub">${t.cancelBasis==='dollars'?`${money(t.prod)} of ${money(t.bookStartVal)} on their book`:`${t.cancels} of ${t.stops} stops`}</span>`,pct1(ta('cancelPct')),rank('cancelPct','route')]);
   if(t.cancelRate!=null) route.push(['Cancels per 100 services',t.cancelRate.toFixed(1),ta('cancelRate')?.toFixed(1)??'—',rank('cancelRate','route')]);
   if(t.cancelShare!=null) route.push(['Share of branch cancels',pct(t.cancelShare),pct(ta('cancelShare')),rank('cancelShare','route')]);
   if(t.voidRate!=null) route.push([`Void % of total stops (goal ≤${TARGET.void}%)`,`${pctG(t.voidRate,TARGET.void)} ${paceBadge('void',t.voidRate,R.el)}<br><span class="sub">${t.voided} of ${t.stops} stops · ${money(t.voidAmt)}</span>`,pct1(ta('voidRate')),rank('voidRate','route')]);
   if(t.adds!=null) route.push(['Recurring adds',t.adds,fmt('adds',ta('adds')),rank('adds','route')]);
   if(t.otUnits!=null) route.push(['One-time jobs sold',t.otUnits,fmt('otUnits',ta('otUnits')),'']);
+  if(t.netGainVal!=null) route.push(['Net gain $',`${fmt('netGainVal',t.netGainVal)}<br><span class="sub">${money(t.addVal||0)} started − ${money(t.prod)} cancelled</span>`,fmt('netGainVal',ta('netGainVal')),rank('netGainVal','route')]);
   if(t.netGain!=null) route.push(['Net setup gain',fmt('netGain',t.netGain),fmt('netGain',ta('netGain')),rank('netGain','route')]);
 
   let monthly='';
@@ -1059,7 +1102,7 @@ function parseReport(file,wb){
       return out;
     }
     if(d.type==='cancel'){
-      let n=0, dupS=0, dupL=0; const seenSetup=new Set(), seenLine={}; out.spCancel={}; out.cancelLocs={}; out.cancelList={};
+      let n=0, dupS=0, dupL=0; const seenSetup=new Set(), seenLine={}; out.spCancel={}; out.cancelLocs={}; out.cancelList={}; out.cancelClass={};
       for(const o of objs){ const dt=toDate(o['Cancel Date']); if(!dt) continue;
         const sid=idStr(o['Setup ID']); if(sid){ if(seenSetup.has(sid)){ dupS++; continue; } seenSetup.add(sid); }
         const nm=parseName(o['Tech Name'])||{key:'unassigned|'}; seen(nm); if(o['Tech Code']&&nm.key) out.codes[String(o['Tech Code']).trim()]=nm.key;
@@ -1069,6 +1112,7 @@ function parseReport(file,wb){
         if(seenLine[lk]){ const t0=seenLine[lk]; t0.prod+=prod; if(ai!=null) t0.ageProd[ai]+=prod; dupL++; continue; }
         const m=ym(dt), M=out.months[m]||(out.months[m]={}), t=M[nm.key]||(M[nm.key]={n:0,prod:0,age:[0,0,0,0,0,0],ageProd:[0,0,0,0,0,0],reasons:{}});
         seenLine[lk]=t;
+        { const cc=String(o['Service Class']||'OTHER').trim().toUpperCase()||'OTHER', CC=out.cancelClass[m]||(out.cancelClass[m]={}), cx=CC[cc]||(CC[cc]={n:0,prod:0}); cx.n++; cx.prod+=prod; }
         { const lname=String(o['Location Company']||'').trim()||[o['Location Last Name'],o['Location First Name']].map(x=>String(x||'').trim()).filter(Boolean).join(', ');
           (out.cancelList[m]||(out.cancelList[m]=[])).push({l:idStr(o['Location Code']),n:lname,r:String(o['Cancel Reason']||'OTHER').trim().toUpperCase(),s:String(o['Service Code']??'').trim().toUpperCase(),d:ymd(dt),k:nm.key,p:Math.round(prod)}); }
         (out.cancelLocs[m]||(out.cancelLocs[m]=[])).push(idStr(o['Location Code'])+'|'+String(o['Service Code']??'').trim().toUpperCase());
@@ -1095,7 +1139,7 @@ function parseReport(file,wb){
         const SC=out.salesClass[m]||(out.salesClass[m]={}), sc=SC[cls]||(SC[cls]={total:0,rec:0,ot:0,ex:0,n:0});
         sc.total+=total; sc.n++; if(isRec){ sc.rec+=annual; sc.ex+=exI; } else sc.ot+=total;
         const tn=parseName(o['Technician Name'])||{key:'unassigned|'}; seen(tn); if(o['Technician Code']) out.codes[String(o['Technician Code']).trim()]=tn.key;
-        const G=out.growth[m]||(out.growth[m]={}), gt=G[tn.key]||(G[tn.key]={rec:0,ot:0}); if(isRec) gt.rec++; else gt.ot++;
+        const G=out.growth[m]||(out.growth[m]={}), gt=G[tn.key]||(G[tn.key]={rec:0,ot:0,recVal:0}); if(isRec){ gt.rec++; gt.recVal+=annual; } else gt.ot++;
         const dt=toDate(o['Invoice Date']); if(dt){ const ds=ymd(dt); if(ds.slice(0,7)===m&&(!out.asOf[m]||ds>out.asOf[m])) out.asOf[m]=ds; }
       }
       out.summary=`${rec} recurring sales and ${ot} one-time sales across ${Object.keys(out.months).length} months${dup?`, ${dup} repeated invoices removed`:''}.`;
@@ -1170,7 +1214,7 @@ async function saveAll(){
     if(p.type==='base'){ newBases[p.asOf]={...p.base,at}; newNames={asOf:p.asOf,names:p.locnames}; continue; }
     for(const [m,data] of Object.entries(p.months)){
       const d=touched[m]||(touched[m]=JSON.parse(JSON.stringify(state.months[m]||{})));
-      d[p.type]=data; if(p.growth) d.growth=p.growth[m]||{}; if(p.spCancel) d.spCancel=p.spCancel[m]||{}; if(p.cancelLocs) d.cancelLocs=p.cancelLocs[m]||[]; if(p.cvLocs) d.routeCV=p.cvLocs[m]||[]; if(p.salesClass) d.salesClass=p.salesClass[m]||{}; if(p.cancelList) d.cancelList=p.cancelList[m]||[]; if(p.voidList) d.voidList=p.voidList[m]||[]; d.sources=d.sources||{}; d.sources[p.type]={file:p.file,at,...(p.asOf?.[m]?{asOf:p.asOf[m]}:{}),...(p.by?{by:p.by}:{}),...(p.ns?{ns:p.ns[m]||{n:0,amt:0}}:{})};
+      d[p.type]=data; if(p.growth) d.growth=p.growth[m]||{}; if(p.spCancel) d.spCancel=p.spCancel[m]||{}; if(p.cancelLocs) d.cancelLocs=p.cancelLocs[m]||[]; if(p.cvLocs) d.routeCV=p.cvLocs[m]||[]; if(p.salesClass) d.salesClass=p.salesClass[m]||{}; if(p.cancelClass) d.cancelClass=p.cancelClass[m]||{}; if(p.cancelList) d.cancelList=p.cancelList[m]||[]; if(p.voidList) d.voidList=p.voidList[m]||[]; d.sources=d.sources||{}; d.sources[p.type]={file:p.file,at,...(p.asOf?.[m]?{asOf:p.asOf[m]}:{}),...(p.by?{by:p.by}:{}),...(p.ns?{ns:p.ns[m]||{n:0,amt:0}}:{})};
     }
   }
   try{
@@ -1230,12 +1274,33 @@ function download(name,text){
   const a=document.createElement('a'); a.href=url; a.download=name; document.body.appendChild(a); a.click(); a.remove();
   setTimeout(()=>URL.revokeObjectURL(url),2000);
 }
+function openHolidays(){
+  const extra=(state.roster.holidays||[]).slice().sort();
+  const fmtD=d=>new Date(d+'T12:00').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric',year:'numeric'});
+  $('#goalTitle').textContent='Company holidays';
+  $('#goalBody').innerHTML=`
+    <p class="sub">Holidays don’t count as workdays, so every pace (stops, cancels, voids and sales budgets) is measured over the remaining workdays.</p>
+    <h3>Built in (2026 calendar)</h3><p>${COMPANY_HOLIDAYS.map(fmtD).join(' · ')}</p>
+    <h3>Added here</h3>
+    <p class="sub">One date per line (YYYY-MM-DD), for example next year’s calendar.</p>
+    <textarea id="holText" rows="8" style="width:100%;font:inherit;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--paper)">${extra.join('\n')}</textarea>
+    <div class="actions"><button type="button" class="go" id="saveHol">Save holidays</button><span class="status" id="holStatus"></span></div>`;
+  $('#saveHol').onclick=()=>{
+    const raw=$('#holText').value.split(/[\s,;]+/).filter(Boolean), good=[], bad=[];
+    for(const x of raw){ const d=toDate(x.length===10?x+'T12:00:00':x); if(d) good.push(ymd(d)); else bad.push(x); }
+    if(bad.length){ $('#holStatus').className='status err'; $('#holStatus').textContent=`Couldn’t read: ${bad.join(', ')}`; return; }
+    const r=JSON.parse(JSON.stringify(state.roster)); r.holidays=[...new Set(good)].sort(); state.roster=r; state.dirty=true;
+    render(); $('#banner').innerHTML=bannerHTML(); $('#goalDlg').close();
+  };
+  $('#goalDlg').showModal();
+}
 function setupAdmin(){
   document.querySelectorAll('.adminbar').forEach(el=>el.hidden=false);
   if(state.migratedGoals){ state.dirty=true; $('#banner').innerHTML=bannerHTML(); }
   if(!window.XLSX){ const sc=document.createElement('script'); sc.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'; document.head.appendChild(sc); }
   $('#exportBtn').onclick=()=>{ download('board.json',JSON.stringify(boardData($('#inclNames').checked))); state.dirty=false; $('#banner').innerHTML=bannerHTML(); };
   $('#openJson').onclick=()=>$('#jsonFile').click();
+  $('#holBtn').onclick=openHolidays;
   $('#jsonFile').onchange=async e=>{ const f=e.target.files[0]; if(!f) return; try{ applyData(JSON.parse(await f.text())); state.dirty=false; render(); }catch(err){ alert('That file isn’t a board.json export.'); } e.target.value=''; };
   // any upload, goal change or roster change marks the data dirty
   for(const id of ['saveUp','saveGoals']) document.addEventListener('click',ev=>{ if(ev.target&&ev.target.id===id) setTimeout(()=>{ state.dirty=true; $('#banner').innerHTML=bannerHTML(); },500); });
