@@ -139,10 +139,21 @@ function namesCompatible(a,b){ const A=nameTok(a),B=nameTok(b); if(!A.length||!B
 function parseCustomerList(text,file){
   if(!/Service Setup List/.test(text.slice(0,3000))) return null;
   const lines=text.split(/\r?\n/);
-  const hi=lines.findIndex(l=>l.startsWith('Location\t')&&l.includes('\tService\t')&&l.includes('\tStatus\t'));
-  if(hi<0) return null;
+  const hi=lines.findIndex(l=>l.startsWith('Location\t')&&l.includes('\tService\t'));
+  // It is a Service Setup List; make sure it was run with the detailed column layout the board needs
+  const need=['Location','Service','Tech 1','Start Date','Status','Location Status','Address','Zip code','Class'];
+  const have=hi<0?[]:lines[hi].split('\t');
+  const missing=need.filter(n=>!have.includes(n));
+  // Annual value: use the Annual column when the export has it; otherwise estimate it from price × visits per year
+  if(!have.includes('Annual')&&!(have.includes('Total')&&have.includes('Frequency'))) missing.push('Annual (or Total and Frequency)');
+  if(hi<0||missing.length){ const e=new Error(`This is a Service Setup List, but it was exported with a shorter column layout. It’s missing: ${missing.join(', ')}. Run it again with the detailed column layout (Address, Status, Location Status, Class, Frequency and Total or Annual).`); e.userFacing=true; throw e; }
   const hdr=lines[hi], h=hdr.split('\t'), ix=n=>h.indexOf(n);
-  const I={cdate:ix('Cancel Date'),loc:ix('Location'),name:ix('Company/Name'),a1:ix('Address'),a2:ix('Address 2'),zip:ix('Zip code'),lt:ix('Location Type'),ls:ix('Location Status'),br:ix('Branch'),svc:ix('Service'),cls:ix('Class'),tech:ix('Tech 1'),st:ix('Status'),start:ix('Start Date'),annual:ix('Annual')};
+  const I={cdate:ix('Cancel Date'),loc:ix('Location'),name:ix('Company/Name'),a1:ix('Address'),a2:ix('Address 2'),zip:ix('Zip code'),lt:ix('Location Type'),ls:ix('Location Status'),br:ix('Branch'),svc:ix('Service'),cls:ix('Class'),tech:ix('Tech 1'),st:ix('Status'),start:ix('Start Date'),annual:ix('Annual'),total:ix('Total'),freq:ix('Frequency')};
+  const VISITS={'WEEKLY':52,'2X WEEK':104,'BIWEEKLY':26,'2X MONTH':24,'MONTHLY':12,'BIMONTHLY':6,'QUARTERLY':4,'TRIANNUAL':3,'2X YEAR':2,'ANNUAL':1};
+  const estAnnual=I.annual<0; let unknownFreq=0;
+  const annualOf=f=>{ if(!estAnnual) return num(f[I.annual])||0; const v=VISITS[String(f[I.freq]||'').trim().toUpperCase()]; if(v==null){ unknownFreq++; return 0; } return (num(f[I.total])||0)*v; };
+  // Without a Branch column, use the branch the report was filtered to ("Branch: [PMD]") so it lands on the right board
+  if(I.br<0){ const fb=(lines.slice(0,hi).find(l=>/^Branch:\t/.test(l))||'').match(/\[([A-Za-z]{2,4})\]/); if(fb&&fb[1].toUpperCase()!==BRANCH) return {type:'base',file:file.name,base:{branch:{setups:0}},summary:''}; }
   const sd=(lines.find(l=>/^System Date:/.test(l))||'').split('\t')[1]||'';
   const asOfD=toDate(sd.replace(/\//g,'-')+'T12:00:00')||new Date();
   const asOf=ymd(asOfD);
@@ -164,7 +175,7 @@ function parseCustomerList(text,file){
     if(!c){ c={id:cust.length,locs:new Set(),name,com,start:null}; cust.push(c); if(ak) (byAddr[ak]||(byAddr[ak]=[])).push(c); }
     c.locs.add(loc); byLoc[loc]=c;
     const svc=String(f[I.svc]||'').trim().toUpperCase(), key=c.id+'|'+svc;
-    const annual=num(f[I.annual])||0, sdt=toDate(String(f[I.start]||'').replace(/\//g,'-')+'T12:00:00');
+    const annual=annualOf(f), sdt=toDate(String(f[I.start]||'').replace(/\//g,'-')+'T12:00:00');
     const yrs=sdt?(asOfD-sdt)/(365.25*864e5):null;
     if(lines2[key]){ lines2[key].annual+=annual; lines2[key].dups++; continue; }
     lines2[key]={c,svc,cls:String(f[I.cls]||'').trim().toUpperCase(),tech:String(f[I.tech]||'').trim().toUpperCase(),annual,yrs,dups:0};
@@ -187,7 +198,7 @@ function parseCustomerList(text,file){
   const activeRows=rows-bad-inactive-otherBranch;
   return {type:'base',file:file.name,asOf,codes:{},termedSeen:{},locnames:names,
     base:{asOf,file:file.name,branch:B,tech:T,checks:{rows,bad,inactive,otherBranch,activeRows,dupSvc:dupSvc.length,dupSvcRows:dupSvc.reduce((a,d)=>a+d.extra,0),mergedLocs:merged.length,dupList:dupSvc.slice(0,150),mergedList:merged.slice(0,150)}},
-    summary:`${rows.toLocaleString()} setups read. ${inactive.toLocaleString()} inactive or cancelled removed${bad?`, ${bad} unreadable rows skipped`:''}. ${activeRows.toLocaleString()} active setups → ${B.setups.toLocaleString()} after removing ${dupSvc.reduce((a,d)=>a+d.extra,0)} repeated services, and ${merged.length} customers had more than one location number at the same address. Active base: ${B.customers.toLocaleString()} customers, ${B.setups.toLocaleString()} service setups, ${money(B.annual)} a year, as of ${asOf}.`};
+    summary:`${estAnnual?`No Annual column, so annual value is estimated from price × visits per year (within about 2% on Tucson’s data${unknownFreq?`; ${unknownFreq} setups with an unknown frequency count as $0`:''}). `:''}${rows.toLocaleString()} setups read. ${inactive.toLocaleString()} inactive or cancelled removed${bad?`, ${bad} unreadable rows skipped`:''}. ${activeRows.toLocaleString()} active setups → ${B.setups.toLocaleString()} after removing ${dupSvc.reduce((a,d)=>a+d.extra,0)} repeated services, and ${merged.length} customers had more than one location number at the same address. Active base: ${B.customers.toLocaleString()} customers, ${B.setups.toLocaleString()} service setups, ${money(B.annual)} a year, as of ${asOf}.`};
 }
 function latestBase(){ const ds=Object.keys(state.bases||{}).sort(); return ds.length?state.bases[ds[ds.length-1]]:null; }
 // Branch base at the start of month m: today's base rolled back with recurring adds and cancels since then
@@ -1244,7 +1255,13 @@ async function onFiles(files){
       if(/Service Setup List/.test(head)){ const text=new TextDecoder('windows-1252').decode(buf); parseFor=()=>parseCustomerList(text,f); }
       else {
         if(!window.XLSX) throw new Error('The spreadsheet reader didn’t load. Check your connection and reopen the page.');
-        const wb=XLSX.read(buf,{type:'array',cellDates:true}); parseFor=()=>parseReport(f,wb);
+        const wb=XLSX.read(buf,{type:'array',cellDates:true});
+        const first=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,defval:'',raw:true,blankrows:false});
+        if(first.slice(0,6).some(r=>r.some(c=>String(c).trim()==='Service Setup List'))){
+          // a Service Setup List opened and saved in Excel: rebuild the tab-separated text the customer-list reader expects
+          const cell=c=>Object.prototype.toString.call(c)==='[object Date]'?ymd(c).replace(/-/g,'/'):String(c??'');
+          const text=first.map(r=>r.map(cell).join('\t')).join('\n'); parseFor=()=>parseCustomerList(text,f);
+        } else parseFor=()=>parseReport(f,wb);
       }
       const found=[]; let recognized=false;
       for(const b of targets){ const p=withBranch(b,parseFor); if(p) recognized=true; if(hasContent(p)) found.push({branch:b.code,p}); }
