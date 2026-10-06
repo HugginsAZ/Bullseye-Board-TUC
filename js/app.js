@@ -11,8 +11,8 @@ const FIELD_DEPT=/^operations,\s*field/i;
 const NON_PERSON=/open tech|subcontract|name not found|administrator|employee,\s*inactive|unassigned|^code\|/i;
 // First month shown in the month picker (earlier months still feed year-to-date branch numbers)
 const START_MONTH='2026-09';
-// Monthly targets: complete 98.5% of stops; cancel % and void % no higher than 1.5%
-const TARGET={completion:98.5,cancel:1.5,void:1.5,loss:1.5}; // loss = cancel % + void % together
+// Monthly targets: complete 98.5% of stops; cancel % no higher than 1.7% and void % no higher than 1.5% (each of total stops)
+const TARGET={completion:98.5,cancel:1.7,void:1.5}; // cancel % and void % are each measured against total stops for the month
 // PestPac name changes: old name -> current name (lowercase "last|first")
 const ALIASES={'weisner|bill':'voss|bill'};
 // People whose numbers always go to the main branch total, never ranked
@@ -24,7 +24,6 @@ const NICK={bill:'william',will:'william',billy:'william',bob:'robert',rob:'robe
 const SORTS={
   route:[
     {key:'health',label:'Health score',dir:-1},
-    {key:'loss',label:'Cancel + Void %',dir:1},
     {key:'cancelPct',label:'Cancel %',dir:1},
     {key:'cancelRate',label:'Cancels per 100 services',dir:1},
     {key:'cancelShare',label:'Share of cancels',dir:1},
@@ -43,7 +42,7 @@ const SORTS={
     {key:'otAll',label:'One-time & initial $',dir:-1},
   ],
 };
-const PCT=['loss','comp','cancelPct','cancelRate','cancelShare','voidRate','pace','goalPct','recPct','otPct'], MONEY=['proj','overall','recVal','otRev','otAll','prod','leadVal','stopsProd'];
+const PCT=['comp','cancelPct','cancelRate','cancelShare','voidRate','pace','goalPct','recPct','otPct'], MONEY=['proj','overall','recVal','otRev','otAll','prod','leadVal','stopsProd'];
 
 const state={months:{},bases:{},locnames:{},roster:{employees:null,codes:{},termedSeen:{},show:{}},month:null,mode:'month',sec:'route',
   sort:{route:'health',sales:'proj'},cx:{view:'pct',who:''},db:null,canEdit:null,local:false,pending:[],arm:null};
@@ -63,6 +62,8 @@ function ymd(d){ const x=new Date(d.getTime()+6*3600e3); return x.getFullYear()+
 function monthName(m,short){ const [y,mo]=m.split('-').map(Number); return new Date(y,mo-1,15).toLocaleDateString(undefined,short?{month:'short'}:{month:'long',year:'numeric'}); }
 function num(v){ if(typeof v==='number') return isFinite(v)?v:null; if(v==null) return null; const s=String(v).replace(/[,$\s]/g,''); if(!s) return null; const f=parseFloat(s); return isNaN(f)?null:f; }
 function pct1(v){ return v==null?'—':(Math.abs(v)<0.05?0:v).toFixed(1)+'%'; }
+// One decimal, but two when rounding would hide which side of a goal the number is on (1.54% vs 1.5%)
+function pctG(v,goal){ if(v==null) return '—'; return Math.abs(v-goal)<0.05&&Math.abs(v-goal)>1e-9?v.toFixed(2)+'%':pct1(v); }
 function pct(v){ return v==null?'—':(Math.abs(v)<10?v.toFixed(1):Math.round(v))+'%'; }
 function money(v){ if(v==null) return '—'; const a=Math.abs(v); return (v<0?'-':'')+'$'+(a>=1e6?(a/1e6).toFixed(2)+'M':a>=100000?Math.round(a/1000)+'k':a>=10000?(a/1000).toFixed(1)+'k':Math.round(a).toLocaleString()); }
 function fmt(k,v){ if(v==null) return '—'; if(k==='recAmt') return money(v); if(PCT.includes(k)) return pct1(v); if(MONEY.includes(k)) return money(v); if(k==='netGain') return (v>0?'+':'')+Math.round(v); return Math.round(v).toLocaleString(); }
@@ -188,22 +189,17 @@ const monthIdx=m=>(+m.slice(0,4))*12+(+m.slice(5,7));
 function monthElapsed(m,asOf){ const now=todayStr().slice(0,7); if(m<now) return 1; if(m>now) return 0; return workdayShare(m,asOf&&asOf.slice(0,7)===m?asOf:todayStr()); }
 function yearElapsed(month,ms,asOf){ return ms.length?(ms.length-1+monthElapsed(month,asOf)):0; }
 // On pace / off pace against the monthly targets; after the month closes it reads goal met / missed
-function lossBadge(t,el,ytd){
-  if(t.loss==null||t.lossProj==null) return '';
-  const final=!ytd&&el>=1, ok=t.lossProj<TARGET.loss;
-  return `<span class="pb ${ok?'ok':'no'}">${final?(ok?'GOAL MET':'GOAL MISSED'):(ok?'ON PACE':'OFF PACE')}</span>`;
-}
 function paceBadge(kind,v,el,ytd){
   if(v==null) return '';
   if(!ytd&&!(el>0)) return '';
-  const final=!ytd&&el>=1;
+  const final=!ytd&&el>=1, share=ytd?1:el;
   let ok;
-  if(kind==='completion') ok=v>=TARGET.completion*(ytd?1:el);
-  else if(kind==='cancel') ok=v<=TARGET.cancel*el;
-  else ok=v<=TARGET.void;
+  if(kind==='completion') ok=v>=TARGET.completion*share;
+  else ok=v<=TARGET[kind==='cancel'?'cancel':'void']*share; // both build up as the month goes on
   const txt=final?(ok?'GOAL MET':'GOAL MISSED'):(ok?'ON PACE':'OFF PACE');
   return `<span class="pb ${ok?'ok':'no'}">${txt}</span>`;
 }
+
 function monthsIn(month,mode){ const all=Object.keys(state.months).sort(); return mode==='month'?all.filter(m=>m===month):all.filter(m=>m.slice(0,4)===month.slice(0,4)&&m<=month); }
 function blank(r){ return {id:r.id,display:r.display,status:r.status,emp:r.emp,voidAmt:0,cvN:0,cvAmt:0,cvExtra:0,vReasons:{},c:0,prod:0,age:[0,0,0,0,0,0],ageProd:[0,0,0,0,0,0],reasons:{},cByM:{},
   rec:0,recVal:0,ot:0,otRev:0,leads:0,leadVal:0,adds:0,otUnits:0,done:0,voided:0,open:0,stops:0,stopsProd:0,cR:0,dR:0}; }
@@ -256,15 +252,18 @@ function compute(month,mode){
   const derive=t=>{
     t.cancels=has.cancel||t.cvExtra?t.c:null;
     t.book=base?(t.bSetups||0):null; t.bookCust=base?(t.bCust||0):null;
-    if(base&&has.cancel&&(t.id==='branch'||techRateOK)){ const den=(t.bSetups||0)+t.c-(has.growth?t.adds:0); t.cancelPct=den>0?t.c/den*100:null; } else t.cancelPct=null;
     t.cancelShare=has.cancel&&B.c?t.c/B.c*100:null;
-    t.cancelRate=rateOK&&t.dR?t.cR/t.dR*100:null;
-    t.voidRate=has.route&&(t.done+t.voided)?t.voided/(t.done+t.voided)*100:null;
+    t.cancelRate=null;
     t.completed=has.route?t.done:null;
     // Stops: open orders at the start of the month plus every sale added since (cancellations never take stops away);
     // without open orders, every order on the route report (not-started already removed)
     t.newStops=has.open&&has.growth?(t.adds||0)+(t.otUnits||0):0; t.startStops=has.open?t.stops:null;
     t.stops=has.open?t.stops+t.newStops:has.route?(t.done+t.voided+t.cvN+t.open):null;
+    // Cancel % and void % are each a share of TOTAL STOPS for the period (company reporting), not stops completed.
+    // Year to date only counts cancels from months that have route data, so both sides cover the same months.
+    const cNum=mode==='month'?t.c:t.cR;
+    t.cancelPct=has.cancel&&t.stops?cNum/t.stops*100:null;
+    t.voidRate=has.route&&t.stops?t.voided/t.stops*100:null;
     t.adds=has.growth?t.adds:null; t.otUnits=has.growth?t.otUnits:null;
     t.netGain=has.growth&&has.cancel?t.adds-t.c:null;
     t.comp=has.route&&t.stops?t.done/t.stops*100:null;
@@ -274,27 +273,23 @@ function compute(month,mode){
   all.forEach(derive);
   B.bSetups=base?base.branch.setups:0; B.bCust=base?base.branch.customers:0; B.bAnnual=base?base.branch.annual:0; B.bAge=base?base.branch.age:null;
   derive(B);
-  if(base&&has.cancel){ const start=baseAtStart(ms[0],base); B.startBase=start; B.cancelPct=start>0?B.c/start*100:null; }
-  if(techRateOK){ all.forEach(t=>{ t.cancelRate=null; }); B.cancelRate=null; }
-  // Cancel + void together; the month goal is to keep the sum under 1.5%. Pace projects the cancel share to month end.
+  // Customer-list base: still used for the Cancellations tab's year-to-date net cancel % (matches the BI net view)
+  if(base&&has.cancel){ const start=baseAtStart(ms[0],base); B.startBase=start; B.baseCancelPct=start>0?B.c/start*100:null; }
   // Year to date (branch): net out new recurring setups and their annual value, the way the BI report does
   B.addVal=0; for(const m of ms){ const d=state.months[m]; if(d?.sales) for(const v of Object.values(d.sales)) B.addVal+=v.recVal||0; }
   B.netCancels=has.growth&&has.cancel?B.c-B.adds:null;
   B.netCancelPct=B.netCancels!=null&&B.startBase>0?B.netCancels/B.startBase*100:null;
   B.netProd=has.cancel&&B.addVal?B.prod-B.addVal:null;
-  for(const t of [...all,B]){ t.loss=t.cancelPct!=null&&t.voidRate!=null?t.cancelPct+t.voidRate:null; t.lossProj=t.loss!=null&&el>0?t.cancelPct/Math.min(el,mode==='month'?1:el)+t.voidRate:null; }
-  if(mode==='ytd'&&B.netCancelPct!=null&&B.voidRate!=null&&el>0){ B.loss=B.netCancelPct+B.voidRate; B.lossProj=B.netCancelPct/el+B.voidRate; }
-  if(base) B.cancelRate=null;
   const board=all.filter(t=>t.status==='board');
-  const cancelDim=board.some(t=>t.cancelPct!=null)?'cancelPct':board.some(t=>t.cancelRate!=null)?'cancelRate':'cancelShare';
-  const dims=[['loss',-1],[cancelDim,-1],['voidRate',-1],['pace',1],['netGain',1],['adds',1],['otUnits',1],['rec',1],['recVal',1],['otRev',1],['leads',1],['completed',1],['stops',1],['cancelShare',-1],['cancelPct',-1],['book',1],['comp',1]];
+  const cancelDim=board.some(t=>t.cancelPct!=null)?'cancelPct':'cancelShare';
+  const dims=[[cancelDim,-1],['voidRate',-1],['pace',1],['netGain',1],['adds',1],['otUnits',1],['rec',1],['recVal',1],['otRev',1],['leads',1],['completed',1],['stops',1],['cancelShare',-1],['cancelPct',-1],['book',1],['comp',1]];
   board.forEach(t=>t.p={});
   for(const [f,dir] of dims){
     const vals=board.map(t=>t[f]).filter(v=>v!=null); if(vals.length<2) continue;
     for(const t of board){ if(t[f]==null) continue; const better=vals.filter(v=>dir<0?v>t[f]:v<t[f]).length, ties=vals.filter(v=>v===t[f]).length-1; t.p[f]=(better+ties/2)/(vals.length-1); }
   }
-  const lossDims=board.some(t=>t.loss!=null)?['loss']:[cancelDim,'voidRate'];
-  for(const t of board){ const parts=[...lossDims,'pace','netGain'].map(f=>t.p[f]).filter(v=>v!=null); t.health=parts.length?Math.round(avg(parts)*100):null; t.p.health=t.health==null?null:t.health/100; }
+  // Health score: cancel %, void %, completion pace and net setup gain, equally weighted, each ranked against the team
+  for(const t of board){ const parts=[cancelDim,'voidRate','pace','netGain'].map(f=>t.p[f]).filter(v=>v!=null); t.health=parts.length?Math.round(avg(parts)*100):null; t.p.health=t.health==null?null:t.health/100; }
   return {board,termed:all.filter(t=>t.status==='termed'),staff:all.filter(t=>t.status==='staff'),other:all.filter(t=>t.status==='other'),main:all.filter(t=>t.status==='main'),B,has,ms,el,asOf,cancelDim,staleGrowth,base,techRateOK,cross,ytd:mode==='ytd',stopsSrc:has.open?'open':'route'};
 }
 function sortList(list,key,sec){ const s=SORTS[sec].find(x=>x.key===key)||{dir:-1};
@@ -356,13 +351,12 @@ function renderBoard(c){
   if(state.mode==='month'){ const ms=Object.keys(state.months).filter(m=>m>=START_MONTH).sort(); const i=ms.indexOf(state.month); if(i>0) PR=compute(ms[i-1],'month'); }
   const prev=PR?Object.fromEntries(PR.board.map(t=>[t.id,t])):{};
   const tiles=routeTiles(R,false);
-  const hints={health:`Health score is each tech’s overall score out of 100, ranking them against the team on ${R.board.some(t=>t.loss!=null)?'cancel + void %':(R.cancelDim==='cancelPct'?'cancel %':R.cancelDim==='cancelRate'?'cancels per 100 services':'share of cancels')+', void %'}, completion pace and net setup gain, equally weighted. 100 means best on every measure.`,
-    cancelPct:`Cancelled setups as a share of the tech’s book (today’s active setups on their route, plus what cancelled, minus what was added). It counts toward the combined cancel + void goal of under ${TARGET.loss}%. Routes have changed over time, so treat tech-level numbers as close, not exact.`,
+  const hints={health:`Health score is each tech’s overall score out of 100, ranking them against the team on ${R.cancelDim==='cancelPct'?'cancel %':'share of cancels'}, void %, completion pace and net setup gain, equally weighted. 100 means best on every measure.`,
+    cancelPct:`Setups cancelled as a share of total stops for the ${state.mode==='month'?'month':'period'} (scheduled stops, not stops completed), the way company reporting measures it. Goal: no more than ${TARGET.cancel}% by month end.`,
     book:'Active service setups on each tech’s route today, from the customer list after removing duplicates.',
     cancelRate:'Cancellations on the tech’s accounts for every 100 services they completed. Lower is better.',
-    cancelShare:R.base&&!R.techRateOK?'Each tech’s share of all branch cancellations. Tech-level cancel % only shows in the Month view for the last few months, because routes have been reassigned over time. The branch cancel % above uses the full customer list.':'Each tech’s share of all branch cancellations. Bigger routes tend to carry a bigger share.',
-    voidRate:'Voided services as a share of completed plus voided. Voids count toward the combined cancel + void goal.',
-    loss:`Cancel % plus void % together. Goal: under ${TARGET.loss}% for the month. Pace projects cancels to month end, since they build up as the month goes on.`,
+    cancelShare:'Each tech’s share of all branch cancellations.',
+    voidRate:`Voided services as a share of total stops for the ${state.mode==='month'?'month':'period'} (scheduled stops, not stops completed). Goal: no more than ${TARGET.void}% by month end.`,
     comp:`Stops completed out of stops scheduled${R.stopsSrc==='open'?' (open orders at the start of the month)':' (every order on the route completion report; upload open orders on the 1st for the true starting count)'}. Goal: ${TARGET.completion}% by month end${R.el<1?`, so about ${(TARGET.completion*R.el).toFixed(1)}% by now`:''}.`,
     completed:'Services completed. Higher is better.', adds:'New recurring customers placed on the tech’s route, counted as units.', stops:'Stops on the books from the open orders report at the start of the month.',
     netGain:'Recurring setups added on the tech’s route minus setups that cancelled. Above zero means the route grew.',
@@ -373,9 +367,8 @@ function renderBoard(c){
     if(sec==='route'){
       if(sk!=='health'&&t.health!=null) ch.push(`<span>health <b>${t.health}</b></span>`);
       if(t.stops!=null) ch.push(`<span class="${on('comp')}">${t.completed!=null?`<b>${t.completed.toLocaleString()}</b> of `:''}${t.stops.toLocaleString()} stops${t.comp!=null?` · <b>${pct1(t.comp)}</b>`:t.completed==null?' scheduled':''} ${paceBadge('completion',t.comp,R.el)}</span>`);
-      if(t.cancels!=null) ch.push(`<span class="${on('cancelPct')} ${on('cancelRate')} ${on('cancelShare')} clk" data-list="cancel" data-who="${esc(t.id)}" title="See each cancellation"><b>${t.cancels}</b> cancels${t.cancelPct!=null?` · <b>${pct1(t.cancelPct)}</b>`:t.cancelRate!=null?` (${t.cancelRate.toFixed(1)}/100)`:''}</span>`);
-      if(t.voidRate!=null) ch.push(`<span class="${on('voidRate')} clk" data-list="void" data-who="${esc(t.id)}" title="See each void"><b>${pct1(t.voidRate)}</b> void</span>`);
-      if(t.loss!=null) ch.push(`<span class="${on('loss')}">cancel + void <b>${pct1(t.loss)}</b> ${lossBadge(t,R.el)}</span>`);
+      if(t.cancels!=null) ch.push(`<span class="${on('cancelPct')} ${on('cancelRate')} ${on('cancelShare')} clk" data-list="cancel" data-who="${esc(t.id)}" title="See each cancellation"><b>${t.cancels}</b> cancels${t.cancelPct!=null?` · <b>${pctG(t.cancelPct,TARGET.cancel)}</b> ${paceBadge('cancel',t.cancelPct,R.el,R.ytd)}`:''}</span>`);
+      if(t.voidRate!=null) ch.push(`<span class="${on('voidRate')} clk" data-list="void" data-who="${esc(t.id)}" title="See each void"><b>${pctG(t.voidRate,TARGET.void)}</b> void ${paceBadge('void',t.voidRate,R.el,R.ytd)}</span>`);
       if(t.netGain!=null) ch.push(`<span class="${on('netGain')} ${on('adds')}">net <b>${fmt('netGain',t.netGain)}</b> (${t.adds} added${t.otUnits?`, ${t.otUnits} one-time`:''})</span>`);
 
     } else {
@@ -414,12 +407,8 @@ function renderBoard(c){
 function routeTiles(R,ytd){
   const B=R.B, el=R.el, t=[], L=!ytd&&state.mode==='month';
   if(B.stops!=null&&(B.completed!=null||!ytd)) t.push(['Stops completed',B.comp!=null?pct1(B.comp):'—',(B.completed!=null?`${B.completed.toLocaleString()} of ${B.stops.toLocaleString()} stops`:`${B.stops.toLocaleString()} stops scheduled · upload route completion to track`)+(B.newStops?` (${B.startStops.toLocaleString()} at the start + ${B.newStops} new sales)`:'')+` · goal ${TARGET.completion}%`,paceBadge('completion',B.comp,el,ytd)]);
-  if(B.loss!=null) t.push(ytd?['Cancel + Void, monthly avg',pct1(B.lossProj),`${pct1((B.netCancelPct??B.cancelPct)/el)} net cancel + ${pct1(B.voidRate)} void per month · goal under ${TARGET.loss}%`,lossBadge(B,el,ytd)]
-    :['Cancel + Void',pct1(B.loss),`${pct1(B.cancelPct)} cancel + ${pct1(B.voidRate)} void · goal under ${TARGET.loss}%`,lossBadge(B,el,ytd)]);
-  if(ytd&&B.netCancelPct!=null) t.push(['Net cancel %',pct1(B.netCancelPct),`${B.c} cancelled − ${B.adds} added = ${B.netCancels} net, of ${B.startBase.toLocaleString()} active Jan 1`]);
-  else if(B.cancels!=null) t.push(['Cancel %',B.cancelPct!=null?pct1(B.cancelPct):'—',`${B.cancels} setups cancelled${L?' · tap to see each':''}`,'',L?'cancel':null]);
-  if(ytd&&B.netProd!=null) t.push(['Net production',money(-B.netProd),`${money(B.prod)} lost − ${money(B.addVal)} added (annual value)`]);
-  if(B.voidRate!=null) t.push(['Void %',pct1(B.voidRate),`${B.voided} voids · ${money(B.voidAmt)} not billed${L?' · tap to see each':''}`,'',L?'void':null]);
+  if(B.cancels!=null) t.push(['Cancel %',B.cancelPct!=null?pctG(B.cancelPct,TARGET.cancel):'—',`${B.cancelPct!=null?(ytd?B.cR:B.c):B.cancels} setups cancelled of ${B.stops!=null?B.stops.toLocaleString():'—'} stops · goal ≤${TARGET.cancel}%${L?' · tap to see each':''}`,paceBadge('cancel',B.cancelPct,el,ytd),L?'cancel':null]);
+  if(B.voidRate!=null) t.push(['Void %',pctG(B.voidRate,TARGET.void),`${B.voided} void${B.voided===1?'':'s'} of ${B.stops.toLocaleString()} stops · ${money(B.voidAmt)} not billed · goal ≤${TARGET.void}%${L?' · tap to see each':''}`,paceBadge('void',B.voidRate,el,ytd),L?'void':null]);
   if(B.netGain!=null) t.push(['Net setups',fmt('netGain',B.netGain),`${B.adds} added · ${B.c} cancelled`]);
   return t;
 }
@@ -430,7 +419,7 @@ function renderYTD(c){
   if(sec==='route'){
     parts.push(kpiStrip(routeTiles(R,true),'route'));
     parts.push(billRoute(R,true));
-    parts.push(`<p class="periodline">${esc(periodLabel())} · branch only · goals: cancel + void under ${TARGET.loss}% a month, ${TARGET.completion}% of stops completed</p>`);
+    parts.push(`<p class="periodline">${esc(periodLabel())} · branch only · goals: ${TARGET.completion}% of stops completed, cancel % and void % each no more than ${TARGET.cancel}% of total stops</p>`);
     parts.push((branchBody('route')||[]).join(''));
   } else if(sec==='sales'){
     const S=computeSales(ytdEnd(),'ytd'); if(!S){ c.innerHTML=`<div class="empty"><h2>No sales details for ${esc(periodLabel())}</h2></div>`; return; }
@@ -448,7 +437,7 @@ function renderYTD(c){
   } else {
     const B=R.B;
     parts.push(kpiStrip([['Cancelled',(B.cancels??0).toLocaleString(),`setups · ${B.adds??0} recurring added`],
-      ...(B.netCancelPct!=null?[['Net cancel %',pct1(B.netCancelPct),`${B.netCancels} net of ${B.startBase.toLocaleString()} active Jan 1 · gross ${pct1(B.cancelPct)}`,'']]:B.cancelPct!=null?[['Cancel %',pct1(B.cancelPct),`of ${B.startBase.toLocaleString()} active Jan 1`,'']]:[]),
+      ...(B.netCancelPct!=null?[['Net cancel %',pct1(B.netCancelPct),`${B.netCancels} net of ${B.startBase.toLocaleString()} active Jan 1 · ${pct1(B.cancelPct)} of stops`,'']]:B.cancelPct!=null?[['Cancel %',pct1(B.cancelPct),'of total stops','']]:[]),
       ...(B.netProd!=null?[['Net production',money(-B.netProd),`${money(B.prod)} lost − ${money(B.addVal)} added`]]:[['Production lost',money(B.prod),'annual value']])],'route'));
     parts.push(`<p class="periodline">${esc(periodLabel())} · branch only</p>`);
     const ms=R.ms.filter(m=>state.months[m]?.cancel||state.months[m]?.routeCV);
@@ -470,8 +459,8 @@ function billRoute(R,ytd){
   const B=R.B, el=R.el, hits=[], miss=[];
   if(!ytd&&!(el>0)) return '';
   if(B.comp!=null){ const g=TARGET.completion*(ytd?1:el); (B.comp>=g?hits:miss).push(B.comp>=g?`stops completed at ${pct1(B.comp)}`:`stops completed at ${pct1(B.comp)}, ${(g-B.comp).toFixed(1)} points under ${g.toFixed(1)}%`); }
-  if(B.loss!=null){ const ok=B.lossProj<TARGET.loss, v=ytd?B.lossProj:B.loss, lbl=ytd?'cancels plus voids averaging':'cancels plus voids at';
-    (ok?hits:miss).push(ok?`${lbl} ${pct1(v)}`:`${lbl} ${pct1(v)}${ytd?' a month':` (${pct1(B.cancelPct)} cancel, ${pct1(B.voidRate)} void)`}${!ytd&&el<1?`, tracking toward ${pct1(B.lossProj)}`:''} against a goal under ${TARGET.loss}%`); }
+  for(const [kind,v,goal,lbl] of [['cancel',B.cancelPct,TARGET.cancel,'cancels'],['void',B.voidRate,TARGET.void,'voids']]){ if(v==null) continue; const g=goal*(ytd?1:Math.min(el,1)), ok=v<=g;
+    (ok?hits:miss).push(ok?`${lbl} at ${pctG(v,g)} of total stops`:!ytd&&el<1?`${lbl} at ${pctG(v,g)} of total stops, above the ${pctG(g,v)} that keeps the month under ${goal}%`:`${lbl} at ${pctG(v,g)} of total stops, over the ${goal}% goal`); }
   const n=hits.length+miss.length; if(!n) return '';
   const final=!ytd&&el>=1;
   const head=!miss.length?(final?'Bullseye! Every route goal was met.':'Right on target. Every route goal is on pace.'):!hits.length?(final?'We missed the target on every goal this month.':'We’re off target on every goal right now.'):`${hits.length} of ${n} on target.`;
@@ -505,7 +494,8 @@ function branchBody(sec){
         ['From the cancel detail',fromDetail],
         ...(B.cvExtra?[['Voided as CANCELED on the route report, not yet in the cancel detail',B.cvExtra]]:[]),
         ['<b>Total cancelled</b>',`<b>${B.c}</b>`],
-        ...(B.cancelPct!=null?[[`${ytd?'Gross cancel %':'Cancel %'} (of ${B.startBase.toLocaleString()} setups active at the start of the ${state.mode==='month'?'month':'year'})`,ytd?pct1(B.cancelPct):`<b>${pct1(B.cancelPct)}</b>`]]:[]),
+        ...(B.cancelPct!=null?[[`<b>Cancel %</b> (of ${B.stops.toLocaleString()} total stops; goal ≤${TARGET.cancel}%)`,`<b>${pctG(B.cancelPct,TARGET.cancel)}</b> ${paceBadge('cancel',B.cancelPct,R.el,ytd)}`]]:[]),
+        ...(ytd&&B.baseCancelPct!=null?[[`Gross cancel % of the ${B.startBase.toLocaleString()} setups active Jan 1`,pct1(B.baseCancelPct)]]:[]),
         ...(ytd&&B.netCancels!=null?[['Recurring setups added',`− ${B.adds}`],['<b>Net cancelled</b>',`<b>${B.netCancels}</b>`],['<b>Net cancel %</b> (matches the BI report)',`<b>${pct1(B.netCancelPct)}</b>`]]:[]),
         ['Annual production lost',money(B.prod)],
         ...(ytd&&B.netProd!=null?[['Annual value of recurring setups added',`− ${money(B.addVal)}`],['<b>Net production lost</b>',`<b>${money(B.netProd)}</b>`]]:[])]));
@@ -515,7 +505,7 @@ function branchBody(sec){
       ${X.unmatched.length?`<ul class="plain">${X.unmatched.map(u=>`<li>Location ${esc(u.loc)} · ${esc(u.svc)} · ${esc(u.name)} · ${esc(monthName(u.m,true))}</li>`).join('')}</ul><p class="sub">These usually show up in the next cancel detail; once they do, they’re matched automatically.</p>`:''}`);
     if(B.voidRate!=null){
       const vr=Object.entries(B.vReasons).sort((a,b)=>b[1]-a[1]);
-      body.push(`<h3>Voids</h3><p>Services that weren’t completed but the customer didn’t cancel. They cost revenue, not setups.</p>`+rowsTable(['','Count'],[['Completed services',B.done.toLocaleString()],['Voided services',B.voided],[`<b>Void %</b>`,`<b>${pct1(B.voidRate)}</b>`],...(B.loss!=null?[[`<b>Cancel + void</b> (goal under ${TARGET.loss}%${ytd?' a month':''})`,`<b>${pct1(ytd?B.lossProj:B.loss)}</b>${ytd?' monthly avg':''} ${lossBadge(B,R.el,ytd)}`]]:[]),['Revenue not billed',money(B.voidAmt)],...(B.cvN?[['Voided because the customer cancelled (counted under cancellations)',`${B.cvN} · ${money(B.cvAmt)}`]]:[]),...(B.open?[['Still open',B.open]]:[])])
+      body.push(`<h3>Voids</h3><p>Services that weren’t completed but the customer didn’t cancel. They cost revenue, not setups.</p>`+rowsTable(['','Count'],[['Total stops',B.stops.toLocaleString()],['Completed services',B.done.toLocaleString()],['Voided services',B.voided],[`<b>Void %</b> (of total stops; goal ≤${TARGET.void}%)`,`<b>${pctG(B.voidRate,TARGET.void)}</b> ${paceBadge('void',B.voidRate,R.el,ytd)}`],['Revenue not billed',money(B.voidAmt)],...(B.cvN?[['Voided because the customer cancelled (counted under cancellations)',`${B.cvN} · ${money(B.cvAmt)}`]]:[]),...(B.open?[['Still open',B.open]]:[])])
         +(vr.length?`<h3>Void reasons</h3>`+rowsTable(['Reason','Voids'],vr.map(([r,n])=>[esc(VOID_LBL[r]||tc(r)),n])):''));
     }
     if(X.nsN) body.push(`<p class="sub">${X.nsN} not-started services (${money(X.nsAmt)}) were removed. These are sales that backed out before the first visit.</p>`);
@@ -574,7 +564,7 @@ function renderCancel(c){
   c.innerHTML=`
     ${kpiStrip([
       ['Cancelled',(R.B.cancels??0).toLocaleString(),'setups · tap to see each',null,'cancel'],
-      ...(R.B.cancelPct!=null?[['Cancel %',pct1(R.B.cancelPct),`of ${R.B.startBase.toLocaleString()} active at the start`,'','cancel']]:[]),
+      ...(R.B.cancelPct!=null?[['Cancel %',pct1(R.B.cancelPct),`of ${R.B.stops.toLocaleString()} total stops · goal ≤${TARGET.cancel}%`,paceBadge('cancel',R.B.cancelPct,R.el),'cancel']]:[]),
       ['Production lost',money(R.B.prod),'annual value'],
       ...(R.B.age.reduce((a,b)=>a+b,0)?[['First-year customers',pct(R.B.age[0]/R.B.age.reduce((a,b)=>a+b,0)*100),'of cancellations']]:[])],'route')}
     ${(()=>{ const tot=R.B.age.reduce((a,b)=>a+b,0); if(tot<5) return ''; const fy=R.B.age[0]/tot*100; const bA=R.B.bAge, bs=bA?bA[0]/bA.reduce((a,b)=>a+b,0)*100:null; return bill(`${pct1(fy)} of this month’s cancels were first-year customers${bs?`, who make up only ${pct1(bs)} of our active setups`:''}. Hitting the target early in a customer’s first year is where routes are won.`); })()}
@@ -937,17 +927,17 @@ function billTech(t,R){
   else if(rank>0&&rank<=3) wins.push(`${ordinal(rank)} on the board. Great work.`);
   const compGoal=TARGET.completion*Math.min(el,1);
   if(t.comp!=null&&t.comp>=compGoal) wins.push(el<1?`Stops are on pace: ${pct1(t.comp)} done so far.`:`Stops finished on target at ${pct1(t.comp)}.`);
-  if(t.loss!=null&&t.lossProj<TARGET.loss) wins.push(`Cancels plus voids are just ${pct1(t.loss)}, inside the ${TARGET.loss}% line.`);
+  if(t.cancelPct!=null&&t.cancelPct<=TARGET.cancel*Math.min(el,1)) wins.push(`Cancels are just ${pct1(t.cancelPct)} of your stops, inside the ${TARGET.cancel}% line.`);
+  if(t.voidRate!=null&&t.voided>0&&t.voidRate<=TARGET.void*Math.min(el,1)) wins.push(`Voids are only ${pct1(t.voidRate)} of your stops.`);
   if(t.netGain>0) wins.push(`Your route grew by ${t.netGain} setup${t.netGain>1?'s':''}.`);
   if(t.voided===0&&t.completed>0) wins.push('Zero voids. Every stop counted.');
   const final=el>=1;
   if(t.comp!=null&&t.comp<compGoal){ const need=Math.ceil(t.stops*compGoal/100-t.completed);
     focus.push({gap:(compGoal-t.comp)/(100-TARGET.completion),txt:final?`You finished ${need} stop${need===1?'':'s'} short of ${TARGET.completion}%. Getting to the open stops early in the week next month will close that gap.`:`You’re ${need} stop${need===1?'':'s'} from where you should be right now. Knocking out open stops early in the week keeps you ahead.`}); }
-  if(t.loss!=null&&t.lossProj>=TARGET.loss){
-    const voidHeavy=(t.voidRate||0)>(t.cancelPct||0)/Math.max(el,0.01);
-    const tip=voidHeavy?(topV&&VOID_TIP[topV[0]]):(topC&&CANCEL_TIP[topC[0]]);
-    focus.push({gap:(t.lossProj-TARGET.loss)/TARGET.loss,txt:`Cancels plus voids are at ${pct1(t.loss)} against a goal under ${TARGET.loss}%. ${tip||'Tap your cancel and void counts to see each location and look for a pattern.'}`});
-  }
+  if(t.cancelPct!=null&&t.cancelPct>TARGET.cancel*Math.min(el,1)){ const g=TARGET.cancel*Math.min(el,1);
+    focus.push({gap:(t.cancelPct-g)/TARGET.cancel,txt:`Cancels are ${pctG(t.cancelPct,TARGET.cancel)} of your stops${el<1?`, above the ${pctG(g,0)} that keeps you under ${TARGET.cancel}% this month`:` against a goal of ${TARGET.cancel}% or less`}. ${(topC&&CANCEL_TIP[topC[0]])||'Tap your cancel count to see each location and look for a pattern.'}`}); }
+  if(t.voidRate!=null&&t.voidRate>TARGET.void*Math.min(el,1)){ const g=TARGET.void*Math.min(el,1);
+    focus.push({gap:(t.voidRate-g)/TARGET.void,txt:`Voids are ${pctG(t.voidRate,TARGET.void)} of your stops${el<1?`, above the ${pctG(g,0)} that keeps you under ${TARGET.void}% this month`:` against a goal of ${TARGET.void}% or less`}. ${(topV&&VOID_TIP[topV[0]])||'Tap your void count to see each stop and look for a pattern.'}`}); }
   if(t.netGain!=null&&t.netGain<0) focus.push({gap:0.2,txt:`Net setups are down ${Math.abs(t.netGain)}. Mentioning add-on services and asking happy customers for referrals helps win them back.`});
   const ageTot=t.age.reduce((a,b)=>a+b,0);
   if(ageTot>=3&&t.age[0]/ageTot>=0.34) focus.push({gap:0.1,txt:'Over a third of your cancels were first-year customers. Extra care on the first few visits pays off.'});
@@ -981,11 +971,10 @@ function openTech(id){
   if(t.stops!=null) route.push(['Stops scheduled',t.stops.toLocaleString(),fmt('stops',ta('stops')),'']);
   if(t.completed!=null) route.push(['Stops completed',t.completed.toLocaleString(),fmt('completed',ta('completed')),'']);
   if(t.comp!=null) route.push([`Completion % (goal ${TARGET.completion}%)`,`${pct(t.comp)} ${paceBadge('completion',t.comp,R.el)}`,pct(ta('comp')),rank('comp','route')]);
-  if(t.loss!=null) route.push([`Cancel + void (goal under ${TARGET.loss}%)`,`${pct1(t.loss)} ${lossBadge(t,R.el)}`,pct1(ta('loss')),rank('loss','route')]);
-  if(t.cancelPct!=null) route.push(['Cancel %',pct1(t.cancelPct),pct1(ta('cancelPct')),rank('cancelPct','route')]);
+  if(t.cancelPct!=null) route.push([`Cancel % of total stops (goal ≤${TARGET.cancel}%)`,`${pctG(t.cancelPct,TARGET.cancel)} ${paceBadge('cancel',t.cancelPct,R.el)}<br><span class="sub">${t.cancels} of ${t.stops} stops</span>`,pct1(ta('cancelPct')),rank('cancelPct','route')]);
   if(t.cancelRate!=null) route.push(['Cancels per 100 services',t.cancelRate.toFixed(1),ta('cancelRate')?.toFixed(1)??'—',rank('cancelRate','route')]);
   if(t.cancelShare!=null) route.push(['Share of branch cancels',pct(t.cancelShare),pct(ta('cancelShare')),rank('cancelShare','route')]);
-  if(t.voidRate!=null) route.push(['Void %',`${pct1(t.voidRate)}<br><span class="sub">${t.voided} voids · ${money(t.voidAmt)}</span>`,pct1(ta('voidRate')),rank('voidRate','route')]);
+  if(t.voidRate!=null) route.push([`Void % of total stops (goal ≤${TARGET.void}%)`,`${pctG(t.voidRate,TARGET.void)} ${paceBadge('void',t.voidRate,R.el)}<br><span class="sub">${t.voided} of ${t.stops} stops · ${money(t.voidAmt)}</span>`,pct1(ta('voidRate')),rank('voidRate','route')]);
   if(t.adds!=null) route.push(['Recurring adds',t.adds,fmt('adds',ta('adds')),rank('adds','route')]);
   if(t.otUnits!=null) route.push(['One-time jobs sold',t.otUnits,fmt('otUnits',ta('otUnits')),'']);
   if(t.netGain!=null) route.push(['Net setup gain',fmt('netGain',t.netGain),fmt('netGain',ta('netGain')),rank('netGain','route')]);
@@ -1002,7 +991,7 @@ function openTech(id){
       :`<p class="sub">${t.status==='termed'?'Not on the active Tucson employment list, so this person’s numbers count in the branch total only.':t.status==='staff'?'Active, but not in a field technician department, so counted in the branch total only.':t.status==='main'?'Assigned to the main branch, so these numbers count in the branch total only.':'Counted in the branch total only.'}</p>`}
     <p class="sub">${esc(periodLabel())}</p>
     ${state.mode==='month'?billTech(t,R):''}
-    ${state.mode==='month'&&(t.cancels||t.voided||t.cvN)?`<div class="actions"><button type="button" class="ghost" data-list="cancel" data-who="${esc(id)}">See ${t.cancels||0} cancellations</button><button type="button" class="ghost" data-list="void" data-who="${esc(id)}">See ${t.voided||0} voids</button></div>`:''}
+    ${state.mode==='month'&&(t.cancels||t.voided||t.cvN)?`<div class="actions"><button type="button" class="ghost" data-list="cancel" data-who="${esc(id)}">See ${t.cancels||0} cancellation${t.cancels===1?'':'s'}</button><button type="button" class="ghost" data-list="void" data-who="${esc(id)}">See ${t.voided||0} void${t.voided===1?'':'s'}</button></div>`:''}
     ${table('Route',route)}
     ${(()=>{ const vr=Object.entries(t.vReasons||{}).sort((a,b)=>b[1]-a[1]); const bits=[];
       if(vr.length) bits.push(`Void reasons: ${vr.map(([r,n])=>`${esc(VOID_LBL[r]||tc(r))} ${n}`).join(', ')}.`);
