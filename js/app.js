@@ -1,12 +1,13 @@
-/* Bullseye Board: Tucson route health
+/* Bullseye Board: route health for each branch (settings in branches.json)
    Viewers load data/board.json. Open the site with ?admin to upload reports and export a new board.json. */
 (() => {
-const ADMIN=new URLSearchParams(location.search).has('admin');
+let ADMIN=new URLSearchParams(location.search).has('admin'); // update mode only works on the admin branch's page (see branches.json)
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 /* ---------- branch setup ---------- */
-const BRANCH='TUC', LOCATION='Tucson';
+// Set per page from branches.json: report branch code and Employment List location
+let BRANCH='TUC', LOCATION='Tucson';
 const FIELD_DEPT=/^operations,\s*field/i;
 const NON_PERSON=/open tech|subcontract|name not found|administrator|employee,\s*inactive|unassigned|^code\|/i;
 // First month shown in the month picker (earlier months still feed year-to-date branch numbers)
@@ -22,9 +23,9 @@ const SCORE_MAX=160;
 const SCORE_WEIGHTS={completion:53,workload:27,cancel:40,void:29,net:11};
 const SCORE_GROUPS=[['Route completion',['completion','workload']],['Cancel %',['cancel']],['Void %',['void']],['Net gain',['net']]];
 // PestPac name changes: old name -> current name (lowercase "last|first")
-const ALIASES={'weisner|bill':'voss|bill'};
+let ALIASES={}; // per branch, from branches.json
 // People whose numbers always go to the main branch total, never ranked
-const FORCE_MAIN=['harmon|bill'];
+let FORCE_MAIN=[]; // per branch, from branches.json
 const AGE=['Under 1 yr','1–2 yrs','2–3 yrs','3–5 yrs','5–10 yrs','10+ yrs'];
 const ageIdx=y=>y==null?null:y<1?0:y<2?1:y<3?2:y<5?3:y<10?4:5;
 const REASONS={CLOSEMOVE:'Moved',FINANCIAL:'Financial',SERVICE:'Service issue','PRICE INCR':'Price increase','NO NEED':'No longer needed',COMPETITOR:'Went to competitor',EXPIRED:'Expired',OFFICEADMN:'Office / admin','NO CONTACT':'Couldn’t reach',COLLECTION:'Collections','PM CHANGE':'Property manager change',SALES:'Sales issue',DECEASED:'Deceased','NAT DISAST':'Natural disaster'};
@@ -381,7 +382,7 @@ function excludedNote(R){
   if(R.main.length) parts.push(`main branch (${names(R.main)})`);
   if(R.staff.length) parts.push(`office and sales staff (${names(R.staff)})`);
   if(R.other.length) parts.push(`open routes and other (${names(R.other)})`);
-  return parts.length?`Includes ${parts.join('; ')}. Only active Tucson field employees are ranked.`:'Everyone in these reports is an active Tucson field employee.';
+  return parts.length?`Includes ${parts.join('; ')}. Only active ${LOCATION} field employees are ranked.`:`Everyone in these reports is an active ${LOCATION} field employee.`;
 }
 function renderBoard(c){
   const sec=state.sec, R=compute(state.month,state.mode), B=R.B;
@@ -454,7 +455,7 @@ function renderBoard(c){
 function routeTiles(R,ytd){
   const B=R.B, el=R.el, t=[], L=!ytd&&state.mode==='month';
   if(B.stops!=null&&(B.completed!=null||!ytd)) t.push(['Stops completed',B.comp!=null?pct1(B.comp):'—',(B.completed!=null?`${B.completed.toLocaleString()} of ${B.stops.toLocaleString()} stops`:`${B.stops.toLocaleString()} stops scheduled · upload route completion to track`)+(B.newStops?` (${B.startStops.toLocaleString()} at the start + ${B.newStops} new sales)`:'')+` · goal ${TARGET.completion}%`,paceBadge('completion',B.comp,el,ytd)]);
-  if(B.cancels!=null) t.push(['Cancel %',B.cancelPct!=null?pctG(B.cancelPct,TARGET.cancel):'—',B.cancelBasis==='dollars'?`${money(B.prod)} cancelled of ${money(B.bookStartVal)} active annual $ · ${B.cancels} setup${B.cancels===1?'':'s'} · goal ≤${ytd?(TARGET.cancel*el).toFixed(1):TARGET.cancel}%${L?' · tap to see each':''}`:`${B.cancels} setups cancelled of ${B.stops!=null?B.stops.toLocaleString():'—'} stops · goal ≤${TARGET.cancel}%${L?' · tap to see each':''}`,paceBadge('cancel',B.cancelPct,el,ytd),L?'cancel':null]);
+  if(B.cancels!=null) t.push(['Cancel %',B.cancelPct!=null?pctG(B.cancelPct,TARGET.cancel):'—',B.cancelBasis==='dollars'?`${money(B.prod)} cancelled of ${money(B.bookStartVal)} active annual $ · ${B.cancels} setup${B.cancels===1?'':'s'} · goal ≤${ytd?(TARGET.cancel*el).toFixed(1):TARGET.cancel}%${L?' · tap to see each':''}`:`${B.cancels} setups cancelled${B.stops!=null?` of ${B.stops.toLocaleString()} stops`:''} · goal ≤${TARGET.cancel}%${L?' · tap to see each':''}`,paceBadge('cancel',B.cancelPct,el,ytd),L?'cancel':null]);
   if(B.voidRate!=null) t.push(['Void %',pctG(B.voidRate,TARGET.void),`${B.voided} void${B.voided===1?'':'s'} of ${B.stops.toLocaleString()} stops · ${money(B.voidAmt)} not billed · goal ≤${TARGET.void}%${L?' · tap to see each':''}`,paceBadge('void',B.voidRate,el,ytd),L?'void':null]);
   if(B.netGainVal!=null) t.push(['Net gain',fmt('netGainVal',B.netGainVal),`${money(B.addVal)} started − ${money(B.prod)} cancelled · ${B.adds??'—'} started, ${B.cancels} cancelled`,`<span class="pb ${B.netGainVal>=0?'ok':'no'}">${B.netGainVal>=0?'GAINING':'SHRINKING'}</span>`]);
   else if(B.netGain!=null) t.push(['Net setups',fmt('netGain',B.netGain),`${B.adds} added · ${B.c} cancelled`]);
@@ -500,7 +501,7 @@ function renderYTD(c){
   c.innerHTML=parts.join('');
   wireBody(c);
 }
-const BILL_IMG='assets/bill.jpg';
+const BILL_IMG='../assets/bill.jpg';
 function bill(msg,title){ return msg?`<div class="bill"><img src="${BILL_IMG}" alt="Bullseye Bill"><div class="bubble"><b>${esc(title||'Bullseye Bill says')}</b><p>${msg}</p></div></div>`:''; }
 // Bill's read on the route goals
 function billRoute(R,ytd){
@@ -534,7 +535,7 @@ function branchBody(sec){
     if(S.cancels!=null) body.push(`<h3>Net change in setups</h3><p>${B.rec} recurring added − ${S.cancels} cancelled = <b>${fmt('netGain',B.rec-S.cancels)}</b></p>`);
     if(B.early) body.push(`<h3>Sale quality</h3><p class="sub">${B.early} first-year cancellations (chargebacks) on ${B.rec} recurring sales. This feeds the sale-quality part of the sales score only; it isn’t subtracted from captured sales.</p>`);
     const names=l=>l.map(t=>`<button type="button" class="linkish" data-sp="${esc(t.id)}">${esc(t.display)}</button>`).join(', ');
-    const grp=[['Main branch',S.main],['Techs and staff without a goal',S.staff],['Not on the Tucson list (inside sales, other branches)',S.outside],['Termed',S.termed],['Other',S.other]].filter(g=>g[1].length);
+    const grp=[['Main branch',S.main],['Techs and staff without a goal',S.staff],[`Not on the ${LOCATION} list (inside sales, other branches)`,S.outside],['Termed',S.termed],['Other',S.other]].filter(g=>g[1].length);
     if(grp.length&&!ytd) body.push(`<h3>Counted in the branch total, not ranked</h3>${grp.map(([l,list])=>`<p><b>${l}:</b> ${names(list)}</p>`).join('')}`);
   } else {
     const R=compute(curMonth(),state.mode); if(!R) return; const B=R.B, X=R.cross;
@@ -586,7 +587,7 @@ function openBranch(sec){
   if(sec==='cancel') sec='route';
   const body=branchBody(sec); if(!body) return;
   body.push(sourcesBlock(true));
-  $('#techTitle').textContent=`Tucson branch · ${periodLabel()}`;
+  $('#techTitle').textContent=`${LOCATION} branch · ${periodLabel()}`;
   $('#techBody').innerHTML=body.join('');
   wireBody($('#techBody'));
   $('#techDlg').showModal();
@@ -654,7 +655,7 @@ function sourcesBlock(open){
       <details class="checks"><summary>Show the duplicates that were removed (location numbers)</summary>
       ${c.dupList.length?`<p class="sub">Same service listed more than once at one customer. Counted once; the annual value of every copy is kept.</p><ul>${c.dupList.map(d=>`<li>Location ${esc(d.locs)}: ${esc(d.svc)} ×${d.extra+1}</li>`).join('')}</ul>`:''}
       ${c.mergedList.length?`<p class="sub">Different location numbers at the same address, counted as one customer.</p><ul>${c.mergedList.map(x=>`<li>Locations ${esc(x)}</li>`).join('')}</ul>`:''}</details>`; }
-  const emp=state.roster.employeesFile?`<span>Employee list: ${esc(state.roster.employeesFile)} (${state.roster.employees?.length||0} Tucson employees)</span>`:'<span>No employment list yet, so termed employees are spotted only by the dates PestPac adds to their names.</span>';
+  const emp=state.roster.employeesFile?`<span>Employee list: ${esc(state.roster.employeesFile)} (${state.roster.employees?.length||0} ${LOCATION} employees)</span>`:'<span>No employment list yet, so termed employees are spotted only by the dates PestPac adds to their names.</span>';
   return open?`<h3>Data sources and checks</h3><div class="srcs sub">${baseLine}${emp}${lines.join('')}</div>`:`<details class="foot"><summary>Data sources and checks</summary><div class="srcs">${baseLine}${emp}${lines.join('')}</div></details>`;
 }
 async function removeBase(date){
@@ -828,7 +829,7 @@ function renderSales(c){
   const parts=[];
   if(S.main.length) parts.push(`main branch (${names(S.main)})`);
   if(S.staff.length) parts.push(`techs and staff without a goal (${names(S.staff)})`);
-  if(S.outside.length) parts.push(`salespeople not on the Tucson list, such as inside sales (${names(S.outside)})`);
+  if(S.outside.length) parts.push(`salespeople not on the ${LOCATION} list, such as inside sales (${names(S.outside)})`);
   if(S.termed.length) parts.push(`termed (${names(S.termed)})`);
   if(S.other.length) parts.push(`other (${names(S.other)})`);
   const expTxt=S.exp<1?`The black mark on each bar is where they should be today (${pct(S.exp*100)} of the ${state.mode==='month'?'month':'year so far'}’s goal).`:'';
@@ -866,7 +867,7 @@ function openSales(id){
   const ms=goalMonths(curMonth(),'ytd').filter(m=>m>=START_MONTH||budgetFor(id,m));
   const cell=(a,b)=>b?`${money(a)} <span class="sub">of ${money(b)}</span>`:money(a);
   const pc=(a,b)=>b?pct1(a/b*100):'—';
-  $('#techTitle').innerHTML=esc(t.display)+(t.status==='board'?'':`<span class="statusTag">${{main:'Main branch',staff:'No budget',outside:'Not on Tucson list',termed:'Termed',other:'Other'}[t.status]}</span>`);
+  $('#techTitle').innerHTML=esc(t.display)+(t.status==='board'?'':`<span class="statusTag">${{main:'Main branch',staff:'No budget',outside:`Not on ${LOCATION} list`,termed:'Termed',other:'Other'}[t.status]}</span>`);
   const P=computeSales(curMonth(),state.mode); const x=P&&[...P.board,...P.termed,...P.outside,...P.staff,...P.main,...P.other].find(y=>y.id===id);
   const lbl=['Total dollars vs budget','Recurring vs budget','One-time & initial vs budget','Sale quality'], ws=[40,25,20,15];
   $('#techBody').innerHTML=`
@@ -898,9 +899,9 @@ function openGoals(month){
   $('#goalBody').innerHTML=`
     <div class="toolrow"><label>Month <select id="budMonth">${months.map(m=>`<option value="${m}" ${m===cur?'selected':''}>${esc(monthName(m))}${state.roster.budgets?.[m]&&Object.keys(state.roster.budgets[m]).length?' ✓':''}</option>`).join('')}</select></label>
       ${prev&&Object.keys(prev).length?`<button type="button" class="ghost" id="copyPrev">Copy ${esc(monthName(prevM,true))}’s budgets</button>`:''}</div>
-    <p class="sub">Budgeted sales dollars for ${esc(monthName(cur))}. Recurring is annual value; one-time is the sale amount. Leave both blank for anyone without a budget this month. Tucson outside sales show on the board either way.</p>
+    <p class="sub">Budgeted sales dollars for ${esc(monthName(cur))}. Recurring is annual value; one-time is the sale amount. Leave both blank for anyone without a budget this month. ${LOCATION} outside sales show on the board either way.</p>
     <div class="tbl"><table><thead><tr><th>Salesperson</th><th>Recurring $</th><th>One-time $</th></tr></thead><tbody>
-    ${list.map(p=>`<tr><td>${esc(p.name)}${p.status==='staff'?'<span class="statusTag">tech/staff</span>':p.status==='outside'?'<span class="statusTag">not Tucson</span>':p.status==='termed'?'<span class="statusTag">termed</span>':''}<br><span class="sub">${money(p.ytd)} sold YTD</span></td>
+    ${list.map(p=>`<tr><td>${esc(p.name)}${p.status==='staff'?'<span class="statusTag">tech/staff</span>':p.status==='outside'?`<span class="statusTag">not ${LOCATION}</span>`:p.status==='termed'?'<span class="statusTag">termed</span>':''}<br><span class="sub">${money(p.ytd)} sold YTD</span></td>
       <td><input type="number" inputmode="decimal" min="0" step="any" data-g="rec" data-id="${esc(p.id)}" data-name="${esc(p.name)}" value="${bud[p.id]?.rec||''}" aria-label="${esc(p.name)} recurring budget" style="width:7.5rem"></td>
       <td><input type="number" inputmode="decimal" min="0" step="any" data-g="ot" data-id="${esc(p.id)}" value="${bud[p.id]?.ot||''}" aria-label="${esc(p.name)} one-time budget" style="width:7.5rem"></td></tr>`).join('')}
     </tbody></table></div>
@@ -916,7 +917,7 @@ function openGoals(month){
     });
     const r=JSON.parse(JSON.stringify(state.roster)); r.budgets=r.budgets||{};
     if(Object.keys(g).length) r.budgets[cur]=g; else delete r.budgets[cur];
-    state.roster=r; state.dirty=true; render(); $('#goalDlg').close();
+    state.roster=r; markDirty(); render(); $('#goalDlg').close();
   };
   if(!$('#goalDlg').open) $('#goalDlg').showModal();
 }
@@ -937,7 +938,7 @@ function lineItems(month){
 function openList(id,kind){
   const L=lineItems(state.month), isB=id==='branch';
   const rows=(kind==='cancel'?L.cancels:L.voids).filter(x=>isB||x.id===id).sort((a,b)=>(b.d||'').localeCompare(a.d||'')||a.l.localeCompare(b.l));
-  const name=isB?'Tucson branch':(rows[0]?.who||[...compute(state.month,'month').board].find(t=>t.id===id)?.display||'');
+  const name=isB?`${LOCATION} branch`:(rows[0]?.who||[...compute(state.month,'month').board].find(t=>t.id===id)?.display||'');
   const tally={}; rows.forEach(x=>tally[x.reason]=(tally[x.reason]||0)+1);
   const rolled=kind==='void'?(L.rolled[isB?'branch':id]||0):0;
   const fmtD=x=>x?new Date(x+'T12:00').toLocaleDateString(undefined,{month:'short',day:'numeric'}):'';
@@ -1069,7 +1070,7 @@ function openTech(id){
       ${t.scoreParts&&Object.keys(t.scoreParts).length?`<div class="scorebar">${(()=>{ const avail=Object.values(t.scoreParts).reduce((a,x)=>a+x.w,0), k=avail?SCORE_MAX/avail:1;
         return SCORE_GROUPS.map(([lbl,keys])=>{ const w=keys.reduce((a,x)=>a+SCORE_WEIGHTS[x],0), has=keys.some(x=>t.scoreParts[x]), pts=keys.reduce((a,x)=>a+(t.scoreParts[x]?t.scoreParts[x].pts*k:0),0);
           return `<span class="sp"><span class="spl">${lbl}</span><span class="spt"><span class="spf" style="width:${has?Math.min(pts/w*100,100):0}%"></span></span><span class="spv">${has?Math.round(pts):'—'} / ${w}</span></span>`; }).join(''); })()}</div>`:''}`
-      :`<p class="sub">${t.status==='termed'?'Not on the active Tucson employment list, so this person’s numbers count in the branch total only.':t.status==='staff'?'Active, but not in a field technician department, so counted in the branch total only.':t.status==='main'?'Assigned to the main branch, so these numbers count in the branch total only.':'Counted in the branch total only.'}</p>`}
+      :`<p class="sub">${t.status==='termed'?`Not on the active ${LOCATION} employment list, so this person’s numbers count in the branch total only.`:t.status==='staff'?'Active, but not in a field technician department, so counted in the branch total only.':t.status==='main'?'Assigned to the main branch, so these numbers count in the branch total only.':'Counted in the branch total only.'}</p>`}
     <p class="sub">${esc(periodLabel())}</p>
     ${state.mode==='month'?billTech(t,R):''}
     ${state.mode==='month'&&(t.cancels||t.voided||t.cvN)?`<div class="actions"><button type="button" class="ghost" data-list="cancel" data-who="${esc(id)}">See ${t.cancels||0} cancellation${t.cancels===1?'':'s'}</button><button type="button" class="ghost" data-list="void" data-who="${esc(id)}">See ${t.voided||0} void${t.voided===1?'':'s'}</button></div>`:''}
@@ -1085,7 +1086,7 @@ function openTech(id){
   $('#techDlg').showModal();
 }
 async function setShow(id,v){
-  state.dirty=true;
+  markDirty();
   const r=JSON.parse(JSON.stringify(state.roster)); r.show=r.show||{}; r.show[id]=v; state.roster=r;
   try{ if(state.db) await state.db.doc('roster/main').set(r); }catch(e){ alert('Couldn’t save that change.'); }
   $('#techDlg').close(); render();
@@ -1116,6 +1117,8 @@ function parseReport(file,wb){
     if(d.type==='dor'){
       // Power BI DOR sales budget. The "Applied filters" note says which months it covers.
       const note=rows.map(r=>r.join(' ')).find(x=>/Applied filters/i.test(x))||'';
+      const bn=note.match(/Branch(?:Name)?\s+is\s+([A-Za-z]{2,4})\b/i);
+      if(bn?bn[1].toUpperCase()!==BRANCH:BRANCH!==(state.cur||BRANCH)) return null;
       const MN=['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
       let months=[...note.matchAll(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.? (\d{4})\b/gi)].map(x=>x[2]+'-'+pad(MN.indexOf(x[1].slice(0,3).toLowerCase())+1));
       if(/current month/i.test(note)){ const last=months.sort().slice(-1)[0]; let cm=todayStr().slice(0,7);
@@ -1136,7 +1139,7 @@ function parseReport(file,wb){
       out.employees=objs.filter(o=>String(o['Location Description']).trim().toLowerCase()===LOCATION.toLowerCase()&&!/term/i.test(o['Employee Status Description']||'')&&o['Last Name'])
         .map(o=>({id:String(o['Employee Id']||o['Last Name']+o['Preferred/First Name']),first:String(o['Preferred/First Name']||'').trim(),last:String(o['Last Name']).trim(),dept:String(o['Department Description']||''),title:String(o['Position Description']||''),status:String(o['Employee Status Description']||'')}));
       const field=out.employees.filter(e=>FIELD_DEPT.test(e.dept)).length;
-      out.summary=`${out.employees.length} active Tucson employees, ${field} in field departments (ranked on the board).`;
+      out.summary=`${out.employees.length} active ${LOCATION} employees, ${field} in field departments (ranked on the board).`;
       return out;
     }
     if(d.type==='cancel'){
@@ -1219,33 +1222,45 @@ function parseReport(file,wb){
 /* ---------- upload ---------- */
 function openUpload(){ state.pending=[]; $('#upFile').value=''; $('#fileList').innerHTML=''; $('#upStatus').textContent=''; $('#saveUp').disabled=true; $('#upDlg').showModal(); }
 const TYPE_LBL={dor:'DOR sales budget',base:'Customer list',cancel:'Cancel detail',sales:'Sales details',route:'Route completion details',open:'Open orders',employees:'Employment list'};
+// Run a parse with another branch's settings (report code, location, name fixes) without switching the page
+function withBranch(b,fn){ const prev=[BRANCH,LOCATION,ALIASES,FORCE_MAIN]; applyBranch(b); try{ return fn(); } finally{ [BRANCH,LOCATION,ALIASES,FORCE_MAIN]=prev; } }
+function hasContent(p){
+  if(!p) return false;
+  if(p.type==='employees') return (p.employees||[]).length>0;
+  if(p.type==='dor') return !!p.dor;
+  if(p.type==='base') return (p.base?.branch?.setups||0)>0;
+  return Object.keys(p.months||{}).length>0;
+}
 async function onFiles(files){
-  const list=$('#fileList');
+  const list=$('#fileList'), targets=CFG&&ADMIN?CFG.branches:[ME];
   for(const f of files){
     const item=document.createElement('div'); item.className='fileitem'; item.innerHTML=`<b>${esc(f.name)}</b><span class="sub">Reading…</span>`; list.appendChild(item);
     try{
       const buf=await f.arrayBuffer();
       const head=new TextDecoder('windows-1252').decode(buf.slice(0,4000));
-      let p=null;
-      if(/Service Setup List/.test(head)) p=parseCustomerList(new TextDecoder('windows-1252').decode(buf),f);
+      let parseFor;
+      if(/Service Setup List/.test(head)){ const text=new TextDecoder('windows-1252').decode(buf); parseFor=()=>parseCustomerList(text,f); }
       else {
         if(!window.XLSX) throw new Error('The spreadsheet reader didn’t load. Check your connection and reopen the page.');
-        const wb=XLSX.read(buf,{type:'array',cellDates:true});
-        p=parseReport(f,wb);
+        const wb=XLSX.read(buf,{type:'array',cellDates:true}); parseFor=()=>parseReport(f,wb);
       }
-      if(!p) throw new Error('Not recognized. Supported: customer list, cancel detail, sales details, route completion details, open orders and the employment list.');
-      state.pending=state.pending.filter(x=>!(x.type===p.type&&x.file===p.file)).concat([p]);
-      item.innerHTML=`<b>${esc(TYPE_LBL[p.type])}: ${esc(f.name)}</b><span class="sub">${esc(p.summary)}</span>`;
+      const found=[]; let recognized=false;
+      for(const b of targets){ const p=withBranch(b,parseFor); if(p) recognized=true; if(hasContent(p)) found.push({branch:b.code,p}); }
+      if(!recognized) throw new Error('Not recognized. Supported: customer list, cancel detail, sales details, route completion details, open orders, DOR sales budget and the employment list.');
+      if(!found.length) throw new Error(`Recognized, but nothing in it belongs to ${targets.map(b=>b.code).join(', ')}. Check the branch filter on the export.`);
+      state.pending=state.pending.filter(x=>!(x.p.file===f.name)).concat(found);
+      const type=found[0].p.type;
+      item.innerHTML=`<b>${esc(TYPE_LBL[type])}: ${esc(f.name)}</b>${found.map(x=>`<span class="sub"><b>${esc(x.branch)}</b> · ${esc(x.p.summary)}</span>`).join('')}`;
     }catch(e){ item.innerHTML=`<b>${esc(f.name)}</b><span class="status err">${esc(e.message||'That file couldn’t be read.')}</span>`; }
   }
   $('#saveUp').disabled=!state.pending.length;
 }
-async function saveAll(){
-  const st=$('#upStatus'), btn=$('#saveUp'); btn.disabled=true; st.className='status'; st.textContent='Saving…';
+// Apply parsed reports to the branch whose data is currently loaded into state
+function applyPending(pending){
   const roster=JSON.parse(JSON.stringify(state.roster)); roster.codes=roster.codes||{}; roster.termedSeen=roster.termedSeen||{}; roster.show=roster.show||{};
   const touched={}, newBases={}; let newNames=null; const at=new Date().toISOString();
   const order=['employees','dor','base','cancel','sales','route','open'];
-  for(const p of [...state.pending].sort((a,b)=>order.indexOf(a.type)-order.indexOf(b.type))){
+  for(const p of [...pending].sort((a,b)=>order.indexOf(a.type)-order.indexOf(b.type))){
     Object.assign(roster.codes,p.codes); Object.assign(roster.termedSeen,p.termedSeen);
     if(p.type==='employees'){ roster.employees=p.employees; roster.employeesFile=p.file; roster.employeesAt=at; continue; }
     if(p.type==='dor'){ roster.dor=roster.dor||{}; const key=p.dor.months.length===1?p.dor.months[0]:'ytd'; roster.dor[key]={...p.dor,file:p.file,at}; continue; }
@@ -1255,17 +1270,25 @@ async function saveAll(){
       d[p.type]=data; if(p.growth) d.growth=p.growth[m]||{}; if(p.spCancel) d.spCancel=p.spCancel[m]||{}; if(p.cancelLocs) d.cancelLocs=p.cancelLocs[m]||[]; if(p.cvLocs) d.routeCV=p.cvLocs[m]||[]; if(p.salesClass) d.salesClass=p.salesClass[m]||{}; if(p.cancelClass) d.cancelClass=p.cancelClass[m]||{}; if(p.cancelList) d.cancelList=p.cancelList[m]||[]; if(p.voidList) d.voidList=p.voidList[m]||[]; d.sources=d.sources||{}; d.sources[p.type]={file:p.file,at,...(p.asOf?.[m]?{asOf:p.asOf[m]}:{}),...(p.by?{by:p.by}:{}),...(p.ns?{ns:p.ns[m]||{n:0,amt:0}}:{})};
     }
   }
+  if(newNames) state.locnames=newNames.names;
+  state.roster=roster; Object.assign(state.months,touched); Object.assign(state.bases,newBases);
+  return touched;
+}
+async function saveAll(){
+  const st=$('#upStatus'), btn=$('#saveUp'); btn.disabled=true; st.className='status'; st.textContent='Saving…';
   try{
-    if(state.db){ await state.db.doc('roster/main').set(roster); for(const [m,d] of Object.entries(touched)) await state.db.doc('months/'+m).set(d); for(const [dt,b] of Object.entries(newBases)) await state.db.doc('base/'+dt).set(b); if(newNames) await state.db.doc('locnames/current').set(newNames); }
-    if(newNames) state.locnames=newNames.names;
-    state.roster=roster; Object.assign(state.months,touched); Object.assign(state.bases,newBases);
-    const ms=Object.keys(touched).sort(); if(ms.length){ const full=ms.filter(m=>touched[m].cancel||touched[m].sales||touched[m].route); state.month=full.pop()||ms.pop(); }
-    state.pending=[]; render();
-    st.className='status ok'; st.textContent='Saved. The board is updated.';
-  }catch(e){
-    btn.disabled=false; st.className='status err';
-    st.textContent=e&&e.code==='invalid_argument'?'Only editors of this board can upload reports.':e&&e.code==='quota_exceeded'?'The board’s storage is full.':'Couldn’t save just now. Try again in a moment.';
-  }
+    const groups={}; for(const x of state.pending) (groups[x.branch]||(groups[x.branch]=[])).push(x.p);
+    const viewing=state.cur||ME.code; let viewTouched=null;
+    for(const [code,list] of Object.entries(groups)){
+      if(code!==state.cur){ stash(); activate(code); }
+      const touched=applyPending(list); if(code===viewing) viewTouched=touched;
+      state.dirtySet.add(code); state.dirty=true; stash();
+    }
+    if(state.cur!==viewing) activate(viewing);
+    if(viewTouched){ const ms=Object.keys(viewTouched).sort(); const full=ms.filter(m=>viewTouched[m].cancel||viewTouched[m].sales||viewTouched[m].route); state.month=full.pop()||ms.pop()||state.month; }
+    state.pending=[]; render(); $('#banner').innerHTML=bannerHTML();
+    st.className='status ok'; st.textContent=`Saved for ${Object.keys(groups).join(', ')}. Publish when you’re ready.`;
+  }catch(e){ console.error(e); btn.disabled=false; st.className='status err'; st.textContent='Something went wrong applying the reports. Nothing was published.'; }
 }
 
 /* ---------- wiring ---------- */
@@ -1283,41 +1306,60 @@ const drop=document.querySelector('.drop');
 drop.addEventListener('dragover',e=>e.preventDefault());
 drop.addEventListener('drop',e=>{ e.preventDefault(); const fs=[...e.dataTransfer.files]; if(fs.length) onFiles(fs); });
 
-/* ---------- data file: load, update mode, export ---------- */
+/* ---------- branches, data files, update mode, publishing ---------- */
+let CFG=null, ME=null; // branches.json, and this page's branch
+function applyBranch(b){ BRANCH=b.code; LOCATION=b.location||b.name; ALIASES=b.aliases||{}; FORCE_MAIN=b.forceMain||[]; }
+function applyLook(b){
+  const th=CFG?.themes?.[b.theme], root=document.documentElement.style;
+  for(const k of ['brand','brand-soft','brand-ink','gold','good','mid','low','paper','line']) root.removeProperty('--'+k);
+  // light background colors only apply in light mode, so dark mode keeps its own background
+  const dark=document.documentElement.dataset.theme==='dark'||(document.documentElement.dataset.theme!=='light'&&window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches);
+  if(th) for(const [k,v] of Object.entries(th)){ if(dark&&(k==='paper'||k==='line')) continue; root.setProperty('--'+k,v); }
+  const tag=document.querySelector('.hero-tag'); if(tag) tag.textContent=`${b.name} route health`;
+  document.title=`Bullseye Board · ${b.name}`;
+  const mt=document.querySelector('meta[name="theme-color"]'); if(mt&&th?.brand) mt.content=th.brand;
+}
+function markDirty(){ state.dirty=true; (state.dirtySet||(state.dirtySet=new Set())).add(state.cur||BRANCH); }
+function snapshot(){ return {version:1,at:state.dataAt,months:state.months,bases:state.bases,locnames:state.locnames,roster:state.roster}; }
+function stash(){ if(state.cur&&state.boards) state.boards[state.cur]=snapshot(); }
+function activate(code){ const b=CFG.branches.find(x=>x.code===code); applyBranch(b); state.cur=code; applyData(state.boards[code]||{}); }
+function switchBranch(code){ if(code===state.cur) return; stash(); activate(code); applyLook(CFG.branches.find(x=>x.code===code)); state.month=null; render(); $('#branchSel').value=code; }
 function bannerHTML(){
-  if(ADMIN&&state.migratedGoals&&state.dirty) return `<div class="banner">Update mode · your earlier monthly goals were copied into <b>September and October budgets</b>. Check them under Sales → <b>Sales budgets</b>, then <b>Download board.json</b> and commit it.</div>`;
-  if(ADMIN) return `<div class="banner">Update mode · upload reports, then <b>Download board.json</b> and commit it to <code>data/board.json</code>. Nothing is saved until you do.${state.dirty?' <b>You have unsaved changes.</b>':''}</div>`;
+  if(ADMIN){
+    const pend=[...(state.dirtySet||[])];
+    return `<div class="banner">Update mode for every branch · now showing <b>${esc(CFG?CFG.branches.find(b=>b.code===state.cur)?.name||state.cur:BRANCH)}</b>. Upload reports here (they’re split by branch automatically), then <b>Publish all branches</b>.${pend.length?` <b>Not published yet: ${esc(pend.join(', '))}.</b>`:''}</div>`;
+  }
   if(state.loadError) return `<div class="banner">Couldn’t load the board data. ${esc(state.loadError)}</div>`;
   return state.dataAt?`<div class="asof">Numbers as of ${esc(new Date(state.dataAt).toLocaleString(undefined,{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}))}</div>`:'';
 }
 function applyData(d){
   Object.assign(state,{months:d.months||{},bases:d.bases||{},locnames:d.locnames||{},
-    roster:Object.assign({employees:null,codes:{},termedSeen:{},show:{},goals:{},goalUnit:'value'},d.roster||{})});
+    roster:Object.assign({employees:null,codes:{},termedSeen:{},show:{}},d.roster||{})});
   state.dataAt=d.at||null; state.month=null;
   const g=state.roster.goals;
   if(g&&Object.keys(g).length&&!state.roster.budgets){
     state.roster.budgets={};
     for(const m of Object.keys(state.months).filter(m=>m>=START_MONTH)) state.roster.budgets[m]=JSON.parse(JSON.stringify(g));
-    state.migratedGoals=true;
   }
   delete state.roster.goals; delete state.roster.goalUnit;
 }
-function boardData(includeNames){
-  const months=JSON.parse(JSON.stringify(state.months));
+function boardData(includeNames,d){
+  d=d||snapshot();
+  const months=JSON.parse(JSON.stringify(d.months||{}));
   if(!includeNames) for(const m of Object.values(months)) if(m.cancelList) m.cancelList=m.cancelList.map(x=>({...x,n:''}));
-  return {version:1,at:new Date().toISOString(),months,bases:state.bases,locnames:includeNames?state.locnames:{},roster:state.roster};
+  return {version:1,at:new Date().toISOString(),months,bases:d.bases||{},locnames:includeNames?(d.locnames||{}):{},roster:d.roster||{}};
 }
-function download(name,text){
-  const url=URL.createObjectURL(new Blob([text],{type:'application/json'}));
-  const a=document.createElement('a'); a.href=url; a.download=name; document.body.appendChild(a); a.click(); a.remove();
+function download(name,blob){
+  const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=name; document.body.appendChild(a); a.click(); a.remove();
   setTimeout(()=>URL.revokeObjectURL(url),2000);
 }
+function loadScript(src){ return new Promise((ok,no)=>{ const sc=document.createElement('script'); sc.src=src; sc.onload=ok; sc.onerror=()=>no(new Error('Couldn’t load '+src)); document.head.appendChild(sc); }); }
 function openHolidays(){
   const extra=(state.roster.holidays||[]).slice().sort();
   const fmtD=d=>new Date(d+'T12:00').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric',year:'numeric'});
   $('#goalTitle').textContent='Company holidays';
   $('#goalBody').innerHTML=`
-    <p class="sub">Holidays don’t count as workdays, so every pace (stops, cancels, voids and sales budgets) is measured over the remaining workdays.</p>
+    <p class="sub">Holidays don’t count as workdays, so every pace (stops, cancels, voids and sales budgets) is measured over the remaining workdays. Changes here apply to every branch.</p>
     <h3>Built in (2026 calendar)</h3><p>${COMPANY_HOLIDAYS.map(fmtD).join(' · ')}</p>
     <h3>Added here</h3>
     <p class="sub">One date per line (YYYY-MM-DD), for example next year’s calendar.</p>
@@ -1327,30 +1369,95 @@ function openHolidays(){
     const raw=$('#holText').value.split(/[\s,;]+/).filter(Boolean), good=[], bad=[];
     for(const x of raw){ const d=toDate(x.length===10?x+'T12:00:00':x); if(d) good.push(ymd(d)); else bad.push(x); }
     if(bad.length){ $('#holStatus').className='status err'; $('#holStatus').textContent=`Couldn’t read: ${bad.join(', ')}`; return; }
-    const r=JSON.parse(JSON.stringify(state.roster)); r.holidays=[...new Set(good)].sort(); state.roster=r; state.dirty=true;
+    // holidays are company-wide: apply to every branch
+    const hol=[...new Set(good)].sort(); const r=JSON.parse(JSON.stringify(state.roster)); r.holidays=hol; state.roster=r; markDirty();
+    for(const [code,bd] of Object.entries(state.boards||{})){ if(code===state.cur) continue; bd.roster=bd.roster||{}; bd.roster.holidays=hol; state.dirtySet.add(code); }
     render(); $('#banner').innerHTML=bannerHTML(); $('#goalDlg').close();
   };
   $('#goalDlg').showModal();
 }
+/* --- publishing straight to GitHub (one commit for every branch that changed) --- */
+const TOKEN_KEY='bullseye_github_key';
+function getToken(){ try{ return localStorage.getItem(TOKEN_KEY)||''; }catch(e){ return ''; } }
+function openTokenDialog(then){
+  $('#goalTitle').textContent='GitHub publishing key';
+  $('#goalBody').innerHTML=`
+    <p>Paste the fine-grained personal access token for <b>${esc(CFG.repo)}</b> (Contents: Read and write). It’s saved only in this browser on this computer.</p>
+    <input type="password" id="tokIn" autocomplete="off" placeholder="github_pat_…" value="${esc(getToken())}" style="width:100%;font:inherit;padding:9px;border:1px solid var(--line);border-radius:8px;background:var(--paper)">
+    <div class="actions"><button type="button" class="go" id="tokSave">Save key</button><button type="button" class="ghost" id="tokForget">Forget key</button><span class="status" id="tokStatus"></span></div>`;
+  $('#tokSave').onclick=()=>{ const v=$('#tokIn').value.trim(); if(!v){ $('#tokStatus').className='status err'; $('#tokStatus').textContent='Paste the key first.'; return; } try{ localStorage.setItem(TOKEN_KEY,v); }catch(e){} $('#goalDlg').close(); if(then) then(); };
+  $('#tokForget').onclick=()=>{ try{ localStorage.removeItem(TOKEN_KEY); }catch(e){} $('#tokIn').value=''; $('#tokStatus').className='status ok'; $('#tokStatus').textContent='Key removed from this browser.'; };
+  $('#goalDlg').showModal();
+}
+async function gh(path,tok,opt={}){
+  const r=await fetch('https://api.github.com/repos/'+CFG.repo+path,{...opt,headers:{Authorization:'Bearer '+tok,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28',...(opt.body?{'Content-Type':'application/json'}:{})}});
+  if(!r.ok){ const e=new Error('GitHub answered '+r.status); e.status=r.status; throw e; }
+  return r.json();
+}
+async function publishAll(){
+  const tok=getToken(); if(!tok) return openTokenDialog(publishAll);
+  stash();
+  const codes=[...(state.dirtySet||[])]; const st=$('#pubStatus');
+  if(!codes.length){ st.className='status ok'; st.textContent='Nothing new to publish.'; return; }
+  const btn=$('#publishBtn'); btn.disabled=true; st.className='status'; st.textContent=`Publishing ${codes.join(', ')}…`;
+  const incl=$('#inclNames').checked, br=CFG.gitBranch||'main';
+  try{
+    const ref=await gh('/git/ref/heads/'+br,tok), base=ref.object.sha, commit=await gh('/git/commits/'+base,tok);
+    const tree=[];
+    for(const code of codes){ const b=CFG.branches.find(x=>x.code===code);
+      const blob=await gh('/git/blobs',tok,{method:'POST',body:JSON.stringify({content:JSON.stringify(boardData(incl,state.boards[code])),encoding:'utf-8'})});
+      tree.push({path:`${b.slug}/board.json`,mode:'100644',type:'blob',sha:blob.sha}); }
+    const nt=await gh('/git/trees',tok,{method:'POST',body:JSON.stringify({base_tree:commit.tree.sha,tree})});
+    const nc=await gh('/git/commits',tok,{method:'POST',body:JSON.stringify({message:`Update boards: ${codes.join(', ')} (${todayStr()})`,tree:nt.sha,parents:[base]})});
+    await gh('/git/refs/heads/'+br,tok,{method:'PATCH',body:JSON.stringify({sha:nc.sha})});
+    state.dirtySet.clear(); state.dirty=false; $('#banner').innerHTML=bannerHTML();
+    st.className='status ok'; st.textContent=`Published ${codes.join(', ')}. Pages update in a minute or two.`;
+  }catch(e){
+    st.className='status err';
+    st.textContent=e.status===401?'GitHub didn’t accept the key. It may have expired; click GitHub key to paste a new one.':e.status===403||e.status===404?'The key can’t write to this repository. Check it has Contents: Read and write on '+CFG.repo+'.':e.status===409||e.status===422?'Someone else saved to the repository at the same moment. Click Publish again.':'Couldn’t reach GitHub. Check your connection and try again, or use Download all.';
+  }finally{ btn.disabled=false; }
+}
+async function downloadAll(){
+  stash(); const st=$('#pubStatus');
+  try{ if(!window.JSZip) await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js');
+    const zip=new JSZip(), incl=$('#inclNames').checked;
+    for(const b of CFG.branches) zip.file(`${b.slug}/board.json`,JSON.stringify(boardData(incl,state.boards[b.code]||{})));
+    download(`bullseye-boards-${todayStr()}.zip`,await zip.generateAsync({type:'blob'}));
+    st.className='status ok'; st.textContent='Downloaded. Unzip and drag the branch folders into the repo on GitHub.';
+  }catch(e){ st.className='status err'; st.textContent='Couldn’t build the download.'; }
+}
 function setupAdmin(){
   document.querySelectorAll('.adminbar').forEach(el=>el.hidden=false);
-  if(state.migratedGoals){ state.dirty=true; $('#banner').innerHTML=bannerHTML(); }
-  if(!window.XLSX){ const sc=document.createElement('script'); sc.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'; document.head.appendChild(sc); }
-  $('#exportBtn').onclick=()=>{ download('board.json',JSON.stringify(boardData($('#inclNames').checked))); state.dirty=false; $('#banner').innerHTML=bannerHTML(); };
+  if(!window.XLSX) loadScript('https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js').catch(()=>{});
+  const sel=$('#branchSel');
+  sel.innerHTML=CFG.branches.map(b=>`<option value="${esc(b.code)}">${esc(b.name)} (${esc(b.code)})</option>`).join(''); sel.value=state.cur;
+  sel.onchange=e=>switchBranch(e.target.value);
+  $('#publishBtn').onclick=publishAll; $('#exportBtn').onclick=downloadAll; $('#tokenBtn').onclick=()=>openTokenDialog();
   $('#openJson').onclick=()=>$('#jsonFile').click();
   $('#holBtn').onclick=openHolidays;
-  $('#jsonFile').onchange=async e=>{ const f=e.target.files[0]; if(!f) return; try{ applyData(JSON.parse(await f.text())); state.dirty=false; render(); }catch(err){ alert('That file isn’t a board.json export.'); } e.target.value=''; };
-  // any upload, goal change or roster change marks the data dirty
-  for(const id of ['saveUp','saveGoals']) document.addEventListener('click',ev=>{ if(ev.target&&ev.target.id===id) setTimeout(()=>{ state.dirty=true; $('#banner').innerHTML=bannerHTML(); },500); });
-  window.addEventListener('beforeunload',e=>{ if(state.dirty){ e.preventDefault(); e.returnValue=''; } });
+  $('#jsonFile').onchange=async e=>{ const f=e.target.files[0]; if(!f) return; try{ applyData(JSON.parse(await f.text())); markDirty(); render(); $('#banner').innerHTML=bannerHTML(); }catch(err){ alert('That file isn’t a board.json export.'); } e.target.value=''; };
+  for(const id of ['saveGoals']) document.addEventListener('click',ev=>{ if(ev.target&&ev.target.id===id) setTimeout(()=>{ markDirty(); $('#banner').innerHTML=bannerHTML(); },300); });
+  window.addEventListener('beforeunload',e=>{ if(state.dirtySet&&state.dirtySet.size){ e.preventDefault(); e.returnValue=''; } });
 }
 async function init(){
-  state.canEdit=ADMIN;
-  try{
-    const r=await fetch('data/board.json',{cache:'no-store'});
-    if(r.ok) applyData(await r.json());
-    else if(r.status!==404) state.loadError=`The server answered ${r.status}.`;
-  }catch(e){ if(!ADMIN) state.loadError=location.protocol==='file:'?'Open the site through a web server (see README), not as a file.':'Check your connection and reload.'; }
+  state.dirtySet=new Set();
+  try{ const r=await fetch('../branches.json',{cache:'no-store'}); if(r.ok) CFG=await r.json(); }catch(e){}
+  const code=String(window.BOARD_CODE||'TUC').toUpperCase();
+  ME=CFG?.branches?.find(b=>b.code===code)||{code,slug:code.toLowerCase(),name:code,location:code};
+  applyBranch(ME); applyLook(ME);
+  if(ADMIN&&(!CFG||CFG.admin!==ME.code)) ADMIN=false; // only the admin branch's page can update
+  state.canEdit=ADMIN; state.cur=ME.code;
+  if(ADMIN){
+    state.boards={};
+    await Promise.all(CFG.branches.map(async b=>{ try{ const r=await fetch(`../${b.slug}/board.json`,{cache:'no-store'}); state.boards[b.code]=r.ok?await r.json():{}; }catch(e){ state.boards[b.code]={}; } }));
+    applyData(state.boards[ME.code]||{});
+  } else {
+    try{
+      const r=await fetch('board.json',{cache:'no-store'});
+      if(r.ok) applyData(await r.json());
+      else if(r.status!==404) state.loadError=`The server answered ${r.status}.`;
+    }catch(e){ state.loadError=location.protocol==='file:'?'Open the site through a web server (see README), not as a file.':'Check your connection and reload.'; }
+  }
   render();
   if(ADMIN) setupAdmin();
   // Pick up a newer board.json when someone comes back to an open tab

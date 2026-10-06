@@ -1,0 +1,72 @@
+{
+  "repo": "HugginsAZ/Bullseye-Board-TUC",
+  "gitBranch": "main",
+  "admin": "TUC",
+  "themes": {
+    "r": {
+      "brand": "#18402B",
+      "brand-soft": "#245A3C",
+      "brand-ink": "#F2F8EF",
+      "gold": "#B29B61"
+    },
+    "p": {
+      "brand": "#032C45",
+      "brand-soft": "#0F4466",
+      "brand-ink": "#F2F6FA",
+      "gold": "#F57B20",
+      "paper": "#EEF1F6",
+      "line": "#D3DAE5"
+    }
+  },
+  "branches": [
+    {
+      "code": "TUC",
+      "slug": "tuc",
+      "name": "Tucson",
+      "location": "Tucson",
+      "theme": "r",
+      "aliases": {
+        "weisner|bill": "voss|bill"
+      },
+      "forceMain": [
+        "harmon|bill"
+      ]
+    },
+    {
+      "code": "PHX",
+      "slug": "phx",
+      "name": "Phoenix",
+      "location": "Phoenix",
+      "theme": "r",
+      "aliases": {},
+      "forceMain": []
+    },
+    {
+      "code": "PXW",
+      "slug": "pxw",
+      "name": "Phoenix West",
+      "location": "Phoenix West",
+      "theme": "r",
+      "aliases": {},
+      "forceMain": []
+    },
+    {
+      "code": "PMD",
+      "slug": "pmd",
+      "name": "Palm Desert",
+      "location": "Palm Desert",
+      "theme": "p",
+      "aliases": {},
+      "forceMain": []
+    },
+    {
+      "code": "SDG",
+      "slug": "sdg",
+      "name": "San Diego",
+      "location": "San Diego",
+      "theme": "p",
+      "aliases": {},
+      "forceMain": []
+    }
+  ]
+}
