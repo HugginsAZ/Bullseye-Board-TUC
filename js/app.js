@@ -492,14 +492,16 @@ function billRoute(R,ytd){
   const B=R.B, el=R.el, hits=[], miss=[];
   if(!ytd&&!(el>0)) return '';
   if(B.comp!=null){ const g=TARGET.completion*(ytd?1:el); (B.comp>=g?hits:miss).push(B.comp>=g?`stops completed at ${pct1(B.comp)}`:`stops completed at ${pct1(B.comp)}, ${(g-B.comp).toFixed(1)} points under ${g.toFixed(1)}%`); }
-  for(const [kind,v,goal,lbl] of [['cancel',B.cancelPct,TARGET.cancel,'cancels'],['void',B.voidRate,TARGET.void,'voids']]){ if(v==null) continue; const g=goal*(ytd?(kind==='cancel'?el:1):Math.min(el,1)), ok=v<=g;
-    const of=kind==='cancel'&&B.cancelBasis==='dollars'?'of the book':'of total stops';
-    (ok?hits:miss).push(ok?`${lbl} at ${pctG(v,g)} ${of}`:!ytd&&el<1?`${lbl} at ${pctG(v,g)} ${of}, above the ${pctG(g,v)} that keeps the month under ${goal}%`:`${lbl} at ${pctG(v,g)} ${of}, over the ${+g.toFixed(2)}% goal`); }
+  if(B.cancelPct!=null){ const share=ytd?el:Math.min(el,1), ok=B.cancelPct<=TARGET.cancel*share, allow=cancelAllowance(B.startBase,share), c=B.cancels||0;
+    (ok?hits:miss).push(ok?`${cust(c)} cancelled${allow!=null?` (goal: about ${allow} or fewer)`:''}`:`${cust(c)} cancelled${allow!=null?`, about ${c-allow} more than the goal allows${!ytd&&el<1?' by this point in the month':''}`:''}`); }
+  if(B.voidRate!=null){ const share=ytd?1:Math.min(el,1), ok=B.voidRate<=TARGET.void*share, allow=B.stops?Math.floor(TARGET.void/100*B.stops*share):null;
+    (ok?hits:miss).push(ok?`${stopsW(B.voided)} voided`:`${stopsW(B.voided)} voided${allow!=null&&B.voided>allow?`, ${B.voided-allow} more than the goal allows`:''}`); }
   const n=hits.length+miss.length; if(!n) return '';
   const final=!ytd&&el>=1;
   const head=!miss.length?(final?'Bullseye! Every route goal was met.':'Right on target. Every route goal is on pace.'):!hits.length?(final?'We missed the target on every goal this month.':'We’re off target on every goal right now.'):`${hits.length} of ${n} on target.`;
   const cap=x=>x.charAt(0).toUpperCase()+x.slice(1);
-  return bill(`${head}${miss.length?` ${cap(miss.join('; '))}.`:''}${hits.length&&miss.length?` Holding steady: ${hits.join(', ')}.`:''}${state.mode==='month'&&B.c?' Tap a cancel or void count to see every location.':''}`);
+  const net=B.netGain!=null?` ${cust(B.adds)} started and ${B.c} cancelled: ${B.netGain>=0?`up ${cust(B.netGain)}`:`${cust(-B.netGain)} short of breaking even`}.`:'';
+  return bill(`${head}${miss.length?` ${cap(miss.join('; '))}.`:''}${hits.length&&miss.length?` Holding steady: ${hits.join(', ')}.`:''}${net}${state.mode==='month'&&B.c?' Tap a cancel or void count to see every customer.':''}`);
 }
 function kpiStrip(tiles,sec){
   if(!tiles.length) return '';
@@ -958,6 +960,11 @@ const VOID_TIP={REFUSE:'Refusals are your top void. A call or text before you ro
   MISSED:'Missed stops showed up. Routing those first thing gets them done.',
   ANIMALS:'Animals blocked a stop. A call-ahead about pets helps.',
   'ADMN ERROR':'An admin error voided a stop. Worth a quick check with the office so it doesn’t repeat.'};
+// Bill talks in customers, not dollars: one customer lost needs one customer started to replace it.
+// Pass/miss still follows the official goals (cancel % of the book in dollars); the allowance is that goal turned into customers.
+const cust=n=>`${n} customer${n===1?'':'s'}`;
+const stopsW=n=>`${n} stop${n===1?'':'s'}`;
+function cancelAllowance(bookUnits,share){ return bookUnits>0?Math.floor(TARGET.cancel/100*bookUnits*share):null; }
 function billTech(t,R){
   if(t.status!=='board') return '';
   const el=R.el, first=t.display.split(' ')[0], wins=[], focus=[];
@@ -969,18 +976,31 @@ function billTech(t,R){
   else if(rank>0&&rank<=3) wins.push(`${ordinal(rank)} on the board. Great work.`);
   const compGoal=TARGET.completion*Math.min(el,1);
   if(t.comp!=null&&t.comp>=compGoal) wins.push(el<1?`Stops are on pace: ${pct1(t.comp)} done so far.`:`Stops finished on target at ${pct1(t.comp)}.`);
-  if(t.cancelPct!=null&&t.cancelPct<=TARGET.cancel*Math.min(el,1)) wins.push(`Cancels are just ${pctG(t.cancelPct,TARGET.cancel)} of your ${t.cancelBasis==='dollars'?'book':'stops'}, inside the ${TARGET.cancel}% line.`);
-  if(t.voidRate!=null&&t.voided>0&&t.voidRate<=TARGET.void*Math.min(el,1)) wins.push(`Voids are only ${pct1(t.voidRate)} of your stops.`);
-  if(t.netGainVal!=null?t.netGainVal>0:t.netGain>0) wins.push(t.netGainVal!=null?`Your route grew ${money(t.netGainVal)} in annual value.`:`Your route grew by ${t.netGain} setup${t.netGain>1?'s':''}.`);
+  const share=Math.min(el,1), c=t.cancels||0, adds=t.adds, bookUnits=(t.bSetups||0)+c-(adds||0);
+  // the goal turned into customers / stops for the whole month (exact, not rounded yet)
+  const monthC=bookUnits>0?TARGET.cancel/100*bookUnits:null, monthV=t.stops?TARGET.void/100*t.stops:null, early=el<1;
+  const allowC=monthC!=null?Math.floor(monthC*share):null;
+  const keepTo=(have,cap,unit)=>{ const left=Math.floor(cap)-have; return left>0?`keep it to ${left} more or fewer`:`no more ${unit} this month keeps you inside it`; };
+  if(t.cancelPct!=null&&t.cancelPct<=TARGET.cancel*share) wins.push(c===0?'No customers cancelled on your route. That’s a bullseye!'
+    :monthC!=null&&c>Math.floor(monthC*share)?`${cust(c)} cancelled, but they were smaller accounts, so you’re still inside the goal.`
+    :early&&monthC!=null?`Only ${cust(c)} cancelled so far. The goal allows about ${Math.floor(monthC)} for the whole month, so ${keepTo(c,monthC,'cancels')}.`
+    :`Only ${cust(c)} cancelled on your route${monthC!=null?`, inside the goal of about ${Math.floor(monthC)}`:''}.`);
+  if(t.voidRate!=null&&t.voided>0&&t.voidRate<=TARGET.void*share) wins.push(`Only ${stopsW(t.voided)} voided.`);
+  if(t.netGain!=null&&t.netGain>0) wins.push(`You started ${cust(adds)} and lost ${c}, so your route is up ${cust(t.netGain)}.`);
   if(t.voided===0&&t.completed>0) wins.push('Zero voids. Every stop counted.');
   const final=el>=1;
   if(t.comp!=null&&t.comp<compGoal){ const need=Math.ceil(t.stops*compGoal/100-t.completed);
     focus.push({gap:(compGoal-t.comp)/(100-TARGET.completion),txt:final?`You finished ${need} stop${need===1?'':'s'} short of ${TARGET.completion}%. Getting to the open stops early in the week next month will close that gap.`:`You’re ${need} stop${need===1?'':'s'} from where you should be right now. Knocking out open stops early in the week keeps you ahead.`}); }
-  if(t.cancelPct!=null&&t.cancelPct>TARGET.cancel*Math.min(el,1)){ const g=TARGET.cancel*Math.min(el,1);
-    focus.push({gap:(t.cancelPct-g)/TARGET.cancel,txt:`Cancels are ${pctG(t.cancelPct,TARGET.cancel)} of your ${t.cancelBasis==='dollars'?'book':'stops'}${el<1?`, above the ${pctG(g,0)} that keeps you under ${TARGET.cancel}% this month`:` against a goal of ${TARGET.cancel}% or less`}. ${(topC&&CANCEL_TIP[topC[0]])||'Tap your cancel count to see each location and look for a pattern.'}`}); }
-  if(t.voidRate!=null&&t.voidRate>TARGET.void*Math.min(el,1)){ const g=TARGET.void*Math.min(el,1);
-    focus.push({gap:(t.voidRate-g)/TARGET.void,txt:`Voids are ${pctG(t.voidRate,TARGET.void)} of your stops${el<1?`, above the ${pctG(g,0)} that keeps you under ${TARGET.void}% this month`:` against a goal of ${TARGET.void}% or less`}. ${(topV&&VOID_TIP[topV[0]])||'Tap your void count to see each stop and look for a pattern.'}`}); }
-  if(t.netGainVal!=null?t.netGainVal<0:(t.netGain!=null&&t.netGain<0)) focus.push({gap:0.2,txt:`${t.netGainVal!=null?`Net gain is ${fmt('netGainVal',t.netGainVal)}`:`Net setups are down ${Math.abs(t.netGain)}`}. Mentioning add-on services and asking happy customers for referrals helps win them back.`});
+  if(t.cancelPct!=null&&t.cancelPct>TARGET.cancel*share){ const g=TARGET.cancel*share, cap=monthC!=null?Math.floor(monthC):null;
+    let why;
+    if(cap==null) why='';
+    else if(early) why=c<cap?`. The goal allows about ${cap} for the whole month and you’re ahead of that pace, so ${keepTo(c,monthC,'cancels')}`:`. The goal allows about ${cap} for the whole month, and you’re already there`;
+    else why=c>cap?`. The goal allows about ${cap} for a route your size, so that’s ${c-cap} too many`:`. That’s within the count, but they were bigger accounts, so the goal was missed`;
+    focus.push({gap:(t.cancelPct-g)/TARGET.cancel,txt:`${cust(c)} cancelled on your route${why}${adds!=null?`. You started ${adds}`:''}. ${(topC&&CANCEL_TIP[topC[0]])||'Tap your cancel count to see each customer and look for a pattern.'}`}); }
+  if(t.voidRate!=null&&t.voidRate>TARGET.void*share){ const g=TARGET.void*share, cap=monthV!=null?Math.floor(monthV):null;
+    const why=cap==null?'':cap<1?`. On a route with ${t.stops} stops, even one void goes over the ${TARGET.void}% goal`:early?(t.voided<cap?`. The goal allows about ${cap} for the whole month, so ${keepTo(t.voided,monthV,'voids')}`:`. The goal allows about ${cap} for the whole month, and you’re already there`):`. The goal allows about ${cap}, so that’s ${t.voided-cap} too many`;
+    focus.push({gap:(t.voidRate-g)/TARGET.void,txt:`${stopsW(t.voided)} voided${why}. ${(topV&&VOID_TIP[topV[0]])||'Tap your void count to see each stop and look for a pattern.'}`}); }
+  if(t.netGain!=null&&t.netGain<0) focus.push({gap:0.2,txt:`You started ${cust(adds)} and lost ${c}, so you’re ${cust(-t.netGain)} short of breaking even. Every new start replaces one: mention add-on services and ask happy customers for referrals.`});
   const ageTot=t.age.reduce((a,b)=>a+b,0);
   if(ageTot>=3&&t.age[0]/ageTot>=0.34) focus.push({gap:0.1,txt:'Over a third of your cancels were first-year customers. Extra care on the first few visits pays off.'});
   focus.sort((a,b)=>b.gap-a.gap);
