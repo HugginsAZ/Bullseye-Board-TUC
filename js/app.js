@@ -214,10 +214,12 @@ const monthIdx=m=>(+m.slice(0,4))*12+(+m.slice(5,7));
 function monthElapsed(m,asOf){ const now=todayStr().slice(0,7); if(m<now) return 1; if(m>now) return 0; return workdayShare(m,asOf&&asOf.slice(0,7)===m?asOf:todayStr()); }
 function yearElapsed(month,ms,asOf){ return ms.length?(ms.length-1+monthElapsed(month,asOf)):0; }
 // On pace / off pace against the monthly targets; after the month closes it reads goal met / missed
-function paceBadge(kind,v,el,ytd){
+function paceBadge(kind,v,el,ytd,basis){
   if(v==null) return '';
   if(!ytd&&!(el>0)) return '';
-  const final=!ytd&&el>=1, share=ytd?(kind==='cancel'?el:1):el; // year to date: cancels add up month by month
+  // Year to date: the dollar cancel % is measured against the Jan 1 book, so its goal adds up month by month (1.7% × months).
+  // Any other year-to-date rate (stops-based cancel %, void %, completion) is a straight rate against the monthly goal.
+  const final=!ytd&&el>=1, share=ytd?(kind==='cancel'&&basis==='dollars'?el:1):el;
   let ok;
   if(kind==='completion') ok=v>=TARGET.completion*share;
   else ok=v<=TARGET[kind==='cancel'?'cancel':'void']*share; // both build up as the month goes on
@@ -455,7 +457,7 @@ function renderBoard(c){
 function routeTiles(R,ytd){
   const B=R.B, el=R.el, t=[], L=!ytd&&state.mode==='month';
   if(B.stops!=null&&(B.completed!=null||!ytd)) t.push(['Stops completed',B.comp!=null?pct1(B.comp):'—',(B.completed!=null?`${B.completed.toLocaleString()} of ${B.stops.toLocaleString()} stops`:`${B.stops.toLocaleString()} stops scheduled · upload route completion to track`)+(B.newStops?` (${B.startStops.toLocaleString()} at the start + ${B.newStops} new sales)`:'')+` · goal ${TARGET.completion}%`,paceBadge('completion',B.comp,el,ytd)]);
-  if(B.cancels!=null) t.push(['Cancel %',B.cancelPct!=null?pctG(B.cancelPct,TARGET.cancel):'—',B.cancelBasis==='dollars'?`${money(B.prod)} cancelled of ${money(B.bookStartVal)} active annual $ · ${B.cancels} setup${B.cancels===1?'':'s'} · goal ≤${ytd?(TARGET.cancel*el).toFixed(1):TARGET.cancel}%${L?' · tap to see each':''}`:`${B.cancels} setups cancelled${B.stops!=null?` of ${B.stops.toLocaleString()} stops`:''} · goal ≤${TARGET.cancel}%${L?' · tap to see each':''}`,paceBadge('cancel',B.cancelPct,el,ytd),L?'cancel':null]);
+  if(B.cancels!=null) t.push(['Cancel %',B.cancelPct!=null?pctG(B.cancelPct,TARGET.cancel):'—',B.cancelBasis==='dollars'?`${money(B.prod)} cancelled of ${money(B.bookStartVal)} active annual $ · ${B.cancels} setup${B.cancels===1?'':'s'} · goal ≤${ytd?(TARGET.cancel*el).toFixed(1):TARGET.cancel}%${L?' · tap to see each':''}`:`${ytd&&B.stops!=null?B.cR:B.cancels} setups cancelled${B.stops!=null?` of ${B.stops.toLocaleString()} stops${ytd?' (months with route data)':''}`:''} · goal ≤${TARGET.cancel}%${L?' · tap to see each':''}`,paceBadge('cancel',B.cancelPct,el,ytd,B.cancelBasis),L?'cancel':null]);
   if(B.voidRate!=null) t.push(['Void %',pctG(B.voidRate,TARGET.void),`${B.voided} void${B.voided===1?'':'s'} of ${B.stops.toLocaleString()} stops · ${money(B.voidAmt)} not billed · goal ≤${TARGET.void}%${L?' · tap to see each':''}`,paceBadge('void',B.voidRate,el,ytd),L?'void':null]);
   if(B.netGainVal!=null) t.push(['Net gain',fmt('netGainVal',B.netGainVal),`${money(B.addVal)} started − ${money(B.prod)} cancelled · ${B.adds??'—'} started, ${B.cancels} cancelled`,`<span class="pb ${B.netGainVal>=0?'ok':'no'}">${B.netGainVal>=0?'GAINING':'SHRINKING'}</span>`]);
   else if(B.netGain!=null) t.push(['Net setups',fmt('netGain',B.netGain),`${B.adds} added · ${B.c} cancelled`]);
@@ -508,7 +510,7 @@ function billRoute(R,ytd){
   const B=R.B, el=R.el, hits=[], miss=[];
   if(!ytd&&!(el>0)) return '';
   if(B.comp!=null){ const g=TARGET.completion*(ytd?1:el); (B.comp>=g?hits:miss).push(B.comp>=g?`stops completed at ${pct1(B.comp)}`:`stops completed at ${pct1(B.comp)}, ${(g-B.comp).toFixed(1)} points under ${g.toFixed(1)}%`); }
-  if(B.cancelPct!=null){ const share=ytd?el:Math.min(el,1), ok=B.cancelPct<=TARGET.cancel*share, allow=cancelAllowance(B.startBase,share), c=B.cancels||0;
+  if(B.cancelPct!=null){ const share=ytd?(B.cancelBasis==='dollars'?el:1):Math.min(el,1), ok=B.cancelPct<=TARGET.cancel*share, allow=cancelAllowance(B.startBase,share), c=B.cancels||0;
     (ok?hits:miss).push(ok?`${cust(c)} cancelled${allow!=null?` (goal: about ${allow} or fewer)`:''}`:`${cust(c)} cancelled${allow!=null?`, about ${c-allow} more than the goal allows${!ytd&&el<1?' by this point in the month':''}`:''}`); }
   if(B.voidRate!=null){ const share=ytd?1:Math.min(el,1), ok=B.voidRate<=TARGET.void*share, allow=B.stops?Math.floor(TARGET.void/100*B.stops*share):null;
     (ok?hits:miss).push(ok?`${stopsW(B.voided)} voided`:`${stopsW(B.voided)} voided${allow!=null&&B.voided>allow?`, ${B.voided-allow} more than the goal allows`:''}`); }
@@ -546,7 +548,7 @@ function branchBody(sec){
         ['From the cancel detail',fromDetail],
         ...(B.cvExtra?[['Voided as CANCELED on the route report, not yet in the cancel detail',B.cvExtra]]:[]),
         ['<b>Total cancelled</b>',`<b>${B.c}</b>`],
-        ...(B.cancelPct!=null&&B.cancelBasis==='dollars'?[['Annual $ cancelled',money(B.prod)],[`Active annual $ at the start of the ${ytd?'year':'month'}`,money(B.bookStartVal)],[`<b>Cancel %</b> (goal ≤${ytd?(TARGET.cancel*R.el).toFixed(1):TARGET.cancel}%)`,`<b>${pctG(B.cancelPct,TARGET.cancel)}</b> ${paceBadge('cancel',B.cancelPct,R.el,ytd)}`]]:B.cancelPct!=null?[[`<b>Cancel %</b> (of ${B.stops.toLocaleString()} total stops; goal ≤${TARGET.cancel}%)`,`<b>${pctG(B.cancelPct,TARGET.cancel)}</b> ${paceBadge('cancel',B.cancelPct,R.el,ytd)}`]]:[]),
+        ...(B.cancelPct!=null&&B.cancelBasis==='dollars'?[['Annual $ cancelled',money(B.prod)],[`Active annual $ at the start of the ${ytd?'year':'month'}`,money(B.bookStartVal)],[`<b>Cancel %</b> (goal ≤${ytd?(TARGET.cancel*R.el).toFixed(1):TARGET.cancel}%)`,`<b>${pctG(B.cancelPct,TARGET.cancel)}</b> ${paceBadge('cancel',B.cancelPct,R.el,ytd,B.cancelBasis)}`]]:B.cancelPct!=null?[[`<b>Cancel %</b> (of ${B.stops.toLocaleString()} total stops; goal ≤${TARGET.cancel}%)`,`<b>${pctG(B.cancelPct,TARGET.cancel)}</b> ${paceBadge('cancel',B.cancelPct,R.el,ytd,B.cancelBasis)}`]]:[]),
         ...(ytd&&B.baseCancelPct!=null?[[`Gross cancel % of the ${B.startBase.toLocaleString()} setups active Jan 1`,pct1(B.baseCancelPct)]]:[]),
         ...(ytd&&B.netCancels!=null?[['Recurring setups added',`− ${B.adds}`],['<b>Net cancelled</b>',`<b>${B.netCancels}</b>`],['<b>Net cancel %</b> (matches the BI report)',`<b>${pct1(B.netCancelPct)}</b>`]]:[]),
         ['Annual production lost',money(B.prod)],
