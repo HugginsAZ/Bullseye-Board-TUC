@@ -14,11 +14,13 @@ const START_MONTH='2026-09';
 // Monthly targets: complete 98.5% of stops; cancel % no higher than 1.7% (gross dollars: cancelled annual $ ÷ active annual $,
 // the company Net Gain report's Cancellation %); void % no higher than 1.5% of total stops
 const TARGET={completion:98.5,cancel:1.7,void:1.5};
-// Tech ranking (health score, 100 points). Each piece ranks the tech against the rest of the team (best = full points).
-// Route completion is 60: completion rate on their own stops (40) plus workload, their share of the branch's stops (20),
-// so a small route can't win on completion alone. Cancels 28, voids 6, net gain 6.
-const SCORE_WEIGHTS={completion:40,workload:20,cancel:28,void:6,net:6};
-const SCORE_LABELS={completion:'Completion rate',workload:'Workload carried',cancel:'Cancel %',void:'Void %',net:'Net gain'};
+// Tech ranking: points out of 160 each month. Each piece ranks the tech against the rest of the team (best = full points).
+// Route completion 80 (50%): completion rate on their own stops 53 + workload 27, their share of the branch's stops.
+// Workload is behind the scenes only (never shown) so a small route can't win on completion alone.
+// Cancels 40 (25%), voids 29 (18%), net gain 11 (7%).
+const SCORE_MAX=160;
+const SCORE_WEIGHTS={completion:53,workload:27,cancel:40,void:29,net:11};
+const SCORE_GROUPS=[['Route completion',['completion','workload']],['Cancel %',['cancel']],['Void %',['void']],['Net gain',['net']]];
 // PestPac name changes: old name -> current name (lowercase "last|first")
 const ALIASES={'weisner|bill':'voss|bill'};
 // People whose numbers always go to the main branch total, never ranked
@@ -29,13 +31,12 @@ const REASONS={CLOSEMOVE:'Moved',FINANCIAL:'Financial',SERVICE:'Service issue','
 const NICK={bill:'william',will:'william',billy:'william',bob:'robert',rob:'robert',rick:'richard',rich:'richard',jim:'james',jimmy:'james',joe:'joseph',mike:'michael',tony:'anthony',dave:'david',dan:'daniel',tom:'thomas',ben:'benjamin',sam:'samuel',chris:'christopher',alex:'alexander',matt:'matthew',nick:'nicholas',steve:'stephen',greg:'gregory',andy:'andrew',josh:'joshua',jon:'jonathan',jake:'jacob',ken:'kenneth',kenny:'kenneth'};
 const SORTS={
   route:[
-    {key:'health',label:'Health score',dir:-1},
+    {key:'health',label:'Points',dir:-1},
     {key:'cancelPct',label:'Cancel %',dir:1},
     {key:'cancelRate',label:'Cancels per 100 services',dir:1},
     {key:'cancelShare',label:'Share of cancels',dir:1},
     {key:'voidRate',label:'Void %',dir:1},
     {key:'comp',label:'Completion %',dir:-1},
-    {key:'workload',label:'Workload',dir:-1},
     {key:'netGainVal',label:'Net gain $',dir:-1},
     {key:'netGain',label:'Net setup gain',dir:-1},
     {key:'adds',label:'Recurring adds',dir:-1},
@@ -332,7 +333,7 @@ function compute(month,mode){
   for(const t of board){
     t.scoreParts={}; let got=0,max=0;
     for(const [k,f] of Object.entries(scoreDims)){ const v=t.p[f]; if(v==null) continue; const w=SCORE_WEIGHTS[k]; t.scoreParts[k]={pts:v*w,w}; got+=v*w; max+=w; }
-    t.health=max?Math.round(got/max*100):null; t.p.health=t.health==null?null:t.health/100;
+    t.health=max?Math.round(got/max*SCORE_MAX):null; t.p.health=t.health==null?null:t.health/SCORE_MAX; // points out of 160
   }
   return {board,termed:all.filter(t=>t.status==='termed'),staff:all.filter(t=>t.status==='staff'),other:all.filter(t=>t.status==='other'),main:all.filter(t=>t.status==='main'),B,has,ms,el,asOf,cancelDim,netDim:board.some(t=>t.netGainVal!=null)?'netGainVal':'netGain',staleGrowth,base,techRateOK,cross,ytd:mode==='ytd',stopsSrc:has.open?'open':'route'};
 }
@@ -395,8 +396,7 @@ function renderBoard(c){
   if(state.mode==='month'){ const ms=Object.keys(state.months).filter(m=>m>=START_MONTH).sort(); const i=ms.indexOf(state.month); if(i>0) PR=compute(ms[i-1],'month'); }
   const prev=PR?Object.fromEntries(PR.board.map(t=>[t.id,t])):{};
   const tiles=routeTiles(R,false);
-  const hints={health:`Health score out of 100: route completion ${SCORE_WEIGHTS.completion+SCORE_WEIGHTS.workload} (completion rate on their own stops ${SCORE_WEIGHTS.completion} + workload, their share of the branch’s stops, ${SCORE_WEIGHTS.workload}), cancel % ${SCORE_WEIGHTS.cancel}, void % ${SCORE_WEIGHTS.void}, net gain ${SCORE_WEIGHTS.net}. Each piece ranks the tech against the team, so a small route can’t win on completion alone.`,
-    workload:'Each tech’s share of all stops on the ranked routes. Bigger routes carry more of the branch, and that counts for a third of the route-completion score.',
+  const hints={health:`Points out of ${SCORE_MAX} for the month, ranked against the team: route completion ${SCORE_WEIGHTS.completion+SCORE_WEIGHTS.workload}, cancel % ${SCORE_WEIGHTS.cancel}, void % ${SCORE_WEIGHTS.void}, net gain ${SCORE_WEIGHTS.net}. The best on each piece earns its full points.`,
     cancelPct:R.B.cancelBasis==='dollars'?`Annual dollars cancelled as a share of the active annual dollars on the book at the start of the ${state.mode==='month'?'month':'year'}, the Cancellation % in the company Net Gain report. Goal: no more than ${TARGET.cancel}% by month end. For techs, the book is the annual dollars on their route in the customer list.`:`Setups cancelled as a share of total stops. Upload the customer list to switch to the company’s dollar-based cancel %. Goal: no more than ${TARGET.cancel}%.`,
     book:'Active service setups on each tech’s route today, from the customer list after removing duplicates.',
     cancelRate:'Cancellations on the tech’s accounts for every 100 services they completed. Lower is better.',
@@ -411,8 +411,7 @@ function renderBoard(c){
   const maxVal=Math.max(...R.board.map(t=>Math.abs(t[sk]??0)),0.0001);
   const chipsFor=t=>{ const on=k=>k===sk?'on':''; const ch=[];
     if(sec==='route'){
-      if(sk!=='health'&&t.health!=null) ch.push(`<span>health <b>${t.health}</b></span>`);
-      if(t.workload!=null) ch.push(`<span class="${on('workload')}"><b>${pct1(t.workload)}</b> of branch stops</span>`);
+      if(sk!=='health'&&t.health!=null) ch.push(`<span><b>${t.health}</b> pts</span>`);
       if(t.stops!=null) ch.push(`<span class="${on('comp')}">${t.completed!=null?`<b>${t.completed.toLocaleString()}</b> of `:''}${t.stops.toLocaleString()} stops${t.comp!=null?` · <b>${pct1(t.comp)}</b>`:t.completed==null?' scheduled':''} ${paceBadge('completion',t.comp,R.el)}</span>`);
       if(t.cancels!=null) ch.push(`<span class="${on('cancelPct')} ${on('cancelRate')} ${on('cancelShare')} clk" data-list="cancel" data-who="${esc(t.id)}" title="See each cancellation"><b>${t.cancels}</b> cancels${t.cancelBasis==='dollars'&&t.prod?` (${money(t.prod)})`:''}${t.cancelPct!=null?` · <b>${pctG(t.cancelPct,TARGET.cancel)}</b> ${paceBadge('cancel',t.cancelPct,R.el,R.ytd)}`:''}</span>`);
       if(t.voidRate!=null) ch.push(`<span class="${on('voidRate')} clk" data-list="void" data-who="${esc(t.id)}" title="See each void"><b>${pctG(t.voidRate,TARGET.void)}</b> void ${paceBadge('void',t.voidRate,R.el,R.ytd)}</span>`);
@@ -438,7 +437,7 @@ function renderBoard(c){
       <span class="score"><span class="num">${sk==='health'||sk==='cancelShare'?'':sk==='cancelRate'?'':fmt(sk,B[sk])}</span><span class="more">Details ›</span></span></button>
     <ol class="board">${sortList(R.board,sk,sec).map((t,i)=>{
       const p=t.p[sk];
-      const pos=sk==='health'?(t.health??0):Math.round(Math.abs(t[sk]??0)/maxVal*100);
+      const pos=sk==='health'?Math.round((t.health??0)/SCORE_MAX*100):Math.round(Math.abs(t[sk]??0)/maxVal*100);
       let delta=''; const pv=prev[t.id];
       if(pv&&pv[sk]!=null&&t[sk]!=null){ const d=t[sk]-pv[sk], good=sdef.dir<0?d>0:d<0;
         const shown=PCT.includes(sk)?Math.abs(d).toFixed(1)+(sk==='cancelRate'?'':'%'):MONEY.includes(sk)?money(Math.abs(d)):Math.abs(Math.round(d));
@@ -1047,7 +1046,6 @@ function openTech(id){
   const route=[],sales=[];
   if(t.cancels!=null) route.push(['Cancellations',t.cancels,fmt('c',ta('cancels')),'']);
   if(t.stops!=null) route.push(['Stops scheduled',t.stops.toLocaleString(),fmt('stops',ta('stops')),'']);
-  if(t.workload!=null) route.push(['Workload (share of branch stops)',pct1(t.workload),pct1(ta('workload')),rank('workload','route')]);
   if(t.completed!=null) route.push(['Stops completed',t.completed.toLocaleString(),fmt('completed',ta('completed')),'']);
   if(t.comp!=null) route.push([`Completion % (goal ${TARGET.completion}%)`,`${pct(t.comp)} ${paceBadge('completion',t.comp,R.el)}`,pct(ta('comp')),rank('comp','route')]);
   if(t.cancelPct!=null) route.push([`Cancel % (goal ≤${TARGET.cancel}%)`,`${pctG(t.cancelPct,TARGET.cancel)} ${paceBadge('cancel',t.cancelPct,R.el)}<br><span class="sub">${t.cancelBasis==='dollars'?`${money(t.prod)} of ${money(t.bookStartVal)} on their book`:`${t.cancels} of ${t.stops} stops`}</span>`,pct1(ta('cancelPct')),rank('cancelPct','route')]);
@@ -1067,8 +1065,10 @@ function openTech(id){
   $('#techTitle').innerHTML=esc(t.display)+(statusLbl?`<span class="statusTag">${statusLbl}</span>`:'');
   const canToggle=!['other','termed','main'].includes(t.status)&&state.canEdit!==false;
   $('#techBody').innerHTML=`
-    ${ranked?`<div class="big ${band(t.p.health)}"><span class="num">${t.health??'—'}</span><span class="lab">health score${t.health!=null?`, ${rank('health','route')}`:''}</span></div>
-      ${t.scoreParts&&Object.keys(t.scoreParts).length?`<div class="scorebar">${Object.entries(SCORE_WEIGHTS).map(([k,w])=>{ const sp=t.scoreParts[k]; return `<span class="sp"><span class="spl">${SCORE_LABELS[k]}</span><span class="spt"><span class="spf" style="width:${sp?sp.pts/w*100:0}%"></span></span><span class="spv">${sp?Math.round(sp.pts):'—'} / ${w}</span></span>`; }).join('')}</div>`:''}`
+    ${ranked?`<div class="big ${band(t.p.health)}"><span class="num">${t.health??'—'}</span><span class="lab">points of ${SCORE_MAX}${t.health!=null?`, ${rank('health','route')}`:''}</span></div>
+      ${t.scoreParts&&Object.keys(t.scoreParts).length?`<div class="scorebar">${(()=>{ const avail=Object.values(t.scoreParts).reduce((a,x)=>a+x.w,0), k=avail?SCORE_MAX/avail:1;
+        return SCORE_GROUPS.map(([lbl,keys])=>{ const w=keys.reduce((a,x)=>a+SCORE_WEIGHTS[x],0), has=keys.some(x=>t.scoreParts[x]), pts=keys.reduce((a,x)=>a+(t.scoreParts[x]?t.scoreParts[x].pts*k:0),0);
+          return `<span class="sp"><span class="spl">${lbl}</span><span class="spt"><span class="spf" style="width:${has?Math.min(pts/w*100,100):0}%"></span></span><span class="spv">${has?Math.round(pts):'—'} / ${w}</span></span>`; }).join(''); })()}</div>`:''}`
       :`<p class="sub">${t.status==='termed'?'Not on the active Tucson employment list, so this person’s numbers count in the branch total only.':t.status==='staff'?'Active, but not in a field technician department, so counted in the branch total only.':t.status==='main'?'Assigned to the main branch, so these numbers count in the branch total only.':'Counted in the branch total only.'}</p>`}
     <p class="sub">${esc(periodLabel())}</p>
     ${state.mode==='month'?billTech(t,R):''}
