@@ -38,8 +38,8 @@ const SORTS={
     {key:'cancelShare',label:'Share of cancels',dir:1},
     {key:'voidRate',label:'Void %',dir:1},
     {key:'comp',label:'Completion %',dir:-1},
-    {key:'netGainVal',label:'Net gain $',dir:-1},
-    {key:'netGain',label:'Net setup gain',dir:-1},
+    
+    {key:'netGain',label:'Net gain',dir:-1},
     {key:'adds',label:'Recurring adds',dir:-1},
   ],
   sales:[
@@ -407,7 +407,7 @@ function renderBoard(c){
     voidRate:`Voided services as a share of total stops for the ${state.mode==='month'?'month':'period'} (scheduled stops, not stops completed). Goal: no more than ${TARGET.void}% by month end.`,
     comp:`Stops completed out of stops scheduled${R.stopsSrc==='open'?' (open orders at the start of the month)':' (every order on the route completion report; upload open orders on the 1st for the true starting count)'}. Goal: ${TARGET.completion}% by month end${R.el<1?`, so about ${(TARGET.completion*R.el).toFixed(1)}% by now`:''}.`,
     completed:'Services completed. Higher is better.', adds:'New recurring customers placed on the tech’s route, counted as units.', stops:'Stops on the books from the open orders report at the start of the month.',
-    netGain:'Recurring setups started on the tech’s route minus setups that cancelled (counts).',
+    netGain:'Customers started on the tech’s route minus customers who cancelled. One cancel needs one new start to break even.',
     netGainVal:'Recurring annual dollars started on the tech’s route minus annual dollars cancelled, the Net Gain in the company report. Above zero means the route grew.',
     rec:'New recurring customers placed on the tech’s route.', recVal:'Annual value of new recurring customers on the route.',
     otRev:'One-time service revenue on the tech’s route.', leads:'Sales where the tech is credited as the lead.'};
@@ -418,8 +418,7 @@ function renderBoard(c){
       if(t.stops!=null) ch.push(`<span class="${on('comp')}">${t.completed!=null?`<b>${t.completed.toLocaleString()}</b> of `:''}${t.stops.toLocaleString()} stops${t.comp!=null?` · <b>${pct1(t.comp)}</b>`:t.completed==null?' scheduled':''} ${paceBadge('completion',t.comp,R.el)}</span>`);
       if(t.cancels!=null) ch.push(`<span class="${on('cancelPct')} ${on('cancelRate')} ${on('cancelShare')} clk" data-list="cancel" data-who="${esc(t.id)}" title="See each cancellation"><b>${t.cancels}</b> cancels${t.cancelBasis==='dollars'&&t.prod?` (${money(t.prod)})`:''}${t.cancelPct!=null?` · <b>${pctG(t.cancelPct,TARGET.cancel)}</b> ${paceBadge('cancel',t.cancelPct,R.el,R.ytd)}`:''}</span>`);
       if(t.voidRate!=null) ch.push(`<span class="${on('voidRate')} clk" data-list="void" data-who="${esc(t.id)}" title="See each void"><b>${pctG(t.voidRate,TARGET.void)}</b> void ${paceBadge('void',t.voidRate,R.el,R.ytd)}</span>`);
-      if(t.netGainVal!=null) ch.push(`<span class="${on('netGainVal')} ${on('netGain')} ${on('adds')}">net <b>${fmt('netGainVal',t.netGainVal)}</b> (${t.adds} started, ${t.cancels} cancelled)</span>`);
-      else if(t.netGain!=null) ch.push(`<span class="${on('netGain')} ${on('adds')}">net <b>${fmt('netGain',t.netGain)}</b> (${t.adds} added${t.otUnits?`, ${t.otUnits} one-time`:''})</span>`);
+      if(t.netGain!=null) ch.push(`<span class="${on('netGain')} ${on('netGainVal')} ${on('adds')}">net <b>${fmt('netGain',t.netGain)}</b> (${t.adds} started, ${t.cancels} cancelled)</span>`);
 
     } else {
       if(t.netGain!=null&&sk!=='netGain') ch.push(`<span>net <b>${fmt('netGain',t.netGain)}</b></span>`);
@@ -459,8 +458,9 @@ function routeTiles(R,ytd){
   if(B.stops!=null&&(B.completed!=null||!ytd)) t.push(['Stops completed',B.comp!=null?pct1(B.comp):'—',(B.completed!=null?`${B.completed.toLocaleString()} of ${B.stops.toLocaleString()} stops`:`${B.stops.toLocaleString()} stops scheduled · upload route completion to track`)+(B.newStops?` (${B.startStops.toLocaleString()} at the start + ${B.newStops} new sales)`:'')+` · goal ${TARGET.completion}%`,paceBadge('completion',B.comp,el,ytd)]);
   if(B.cancels!=null) t.push(['Cancel %',B.cancelPct!=null?pctG(B.cancelPct,TARGET.cancel):'—',B.cancelBasis==='dollars'?`${money(B.prod)} cancelled of ${money(B.bookStartVal)} active annual $ · ${B.cancels} setup${B.cancels===1?'':'s'} · goal ≤${ytd?(TARGET.cancel*el).toFixed(1):TARGET.cancel}%${L?' · tap to see each':''}`:`${ytd&&B.stops!=null?B.cR:B.cancels} setups cancelled${B.stops!=null?` of ${B.stops.toLocaleString()} stops${ytd?' (months with route data)':''}`:''} · goal ≤${TARGET.cancel}%${L?' · tap to see each':''}`,paceBadge('cancel',B.cancelPct,el,ytd,B.cancelBasis),L?'cancel':null]);
   if(B.voidRate!=null) t.push(['Void %',pctG(B.voidRate,TARGET.void),`${B.voided} void${B.voided===1?'':'s'} of ${B.stops.toLocaleString()} stops · ${money(B.voidAmt)} not billed · goal ≤${TARGET.void}%${L?' · tap to see each':''}`,paceBadge('void',B.voidRate,el,ytd),L?'void':null]);
+  // Branch tile stays in dollars (company Net Gain view); tech rows use customer counts
   if(B.netGainVal!=null) t.push(['Net gain',fmt('netGainVal',B.netGainVal),`${money(B.addVal)} started − ${money(B.prod)} cancelled · ${B.adds??'—'} started, ${B.cancels} cancelled`,`<span class="pb ${B.netGainVal>=0?'ok':'no'}">${B.netGainVal>=0?'GAINING':'SHRINKING'}</span>`]);
-  else if(B.netGain!=null) t.push(['Net setups',fmt('netGain',B.netGain),`${B.adds} added · ${B.c} cancelled`]);
+  else if(B.netGain!=null) t.push(['Net gain',fmt('netGain',B.netGain),`${cust(B.adds)} started − ${B.c} cancelled`,`<span class="pb ${B.netGain>=0?'ok':'no'}">${B.netGain>=0?'GAINING':'SHRINKING'}</span>`]);
   return t;
 }
 function renderYTD(c){
