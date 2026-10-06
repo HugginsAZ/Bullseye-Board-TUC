@@ -275,3 +275,11 @@ body.present .hero-img{height:200px}
 .banner code{background:rgba(0,0,0,.08);padding:1px 4px;border-radius:4px}
 
 [hidden]{display:none!important}
+
+/* ---- health score breakdown in tech drill-downs ---- */
+.scorebar{display:grid;gap:6px;margin:6px 0 14px}
+.sp{display:grid;grid-template-columns:9.5rem 1fr 4.2rem;gap:10px;align-items:center;font-size:.86rem}
+.spl{color:var(--muted)}
+.spt{height:10px;border-radius:5px;background:var(--line);position:relative;overflow:hidden}
+.spf{position:absolute;inset:0 auto 0 0;background:var(--good);border-radius:5px}
+.spv{text-align:right;font-variant-numeric:tabular-nums}
