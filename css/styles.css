@@ -304,3 +304,14 @@ body.present .hero-img{height:200px}
 body.district .kpis,.mtiles{grid-template-columns:repeat(3,minmax(0,1fr))}
 @media (max-width:640px){ body.district .kpis,.mtiles{grid-template-columns:repeat(2,minmax(0,1fr))} }
 h3.dh{margin:18px 0 0;font-size:1.15rem;color:var(--muted)}
+
+/* ---- backlog: sold but not completed yet ("maybe") ---- */
+.pb.maybe{background:transparent;border:1.5px dashed #B07A12;color:#8A5A00}
+.kpi.maybe{border-style:dashed;border-width:2px;border-top:6px dashed #C98A12}
+.kpi.maybe .v{color:#6B4A00}
+.pend{color:#8A5A00;font-style:italic;white-space:nowrap}
+.gbp{position:absolute;top:-1px;bottom:-1px;border:2px dashed var(--c);border-left:none;border-radius:0 6px 6px 0;background:repeating-linear-gradient(135deg,transparent 0 4px,color-mix(in srgb,var(--c) 30%,transparent) 4px 7px)}
+.c-none .gbp{--c:var(--muted)}
+.kpi{min-width:0;overflow-wrap:anywhere}
+.kpi .s{overflow-wrap:anywhere}
+@media (max-width:640px){ .gbv{white-space:normal} .gbv .pend{display:inline-block} }
