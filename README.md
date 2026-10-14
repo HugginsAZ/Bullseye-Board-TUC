@@ -13,6 +13,7 @@ Static website (HTML, CSS, JavaScript). No build step, no server code. Runs on G
 | Phoenix West (PXW) | `…/Bullseye-Board-TUC/pxw/` |
 | Palm Desert (PMD) | `…/Bullseye-Board-TUC/pmd/` |
 | San Diego (SDG) | `…/Bullseye-Board-TUC/sdg/` |
+| **DSW District** (month-end outlook for managers) | `…/Bullseye-Board-TUC/dsw/` |
 
 **Updating every branch:** open `…/tuc/?admin`. That is the only page with update mode.
 
@@ -28,6 +29,14 @@ tuc/ phx/ pxw/ pmd/ sdg/
    index.html     the branch page
    board.json     that branch's numbers (written by Publish all branches)
 ```
+
+## DSW District board
+
+`dsw/` shows every branch's month-end projections in tiles: sales to budget, route completion, cancel %, void %, net gain and business valuation, plus a district total. Projections carry each running total forward at the current pace (workdays done ÷ workdays in the month, holidays excluded). It reads the same branch files the branch boards use, so it updates with **Publish all branches**. Multi-branch DOR and BV exports land on the district board automatically.
+
+## Projections
+
+The district board's month-end numbers blend the current pace with each branch's last 3 years for that month (scaled to how this year is running); early in a month history carries more weight, by the last week it's almost all actual. Year-end tiles add the closed months, this month's projection and each remaining month on the same trend, against the FY budget plan. Working days come from the FY budget plan. History is stored in each branch's board.json, so it never needs uploading again; the daily year-to-date uploads keep the current year current and roll into history as the year turns.
 
 ## One-time setup
 
@@ -55,7 +64,10 @@ tuc/ phx/ pxw/ pmd/ sdg/
 | Open Orders | PestPac | All branches, work dates through month end | 1st of each month |
 | Service Setup List (customer list) | PestPac | One export per branch (files are large) | Monthly |
 | Employment List | HR | All locations | When people are hired, termed or change roles |
-| DOR Sales Budget | Power BI (DOR) | One branch per export (the branch is read from the filter note) | When budgets change |
+| DOR Sales Budget | Power BI (DOR) | One branch per export for branch boards; an all-branch export feeds the district total | When budgets change |
+| Business Valuation | Power BI | **Current month only** (all branches → district, or one branch per export) | Start of each month |
+| FY budget plan (Sales Trend Tracker) | Finance | The year's CSV | Once a year, when the new budget is out |
+| History (one time) | Power BI | 3-year Sales Details and 3-year Cancel Detail exports (same formats as the daily ones) | Once; after that the daily uploads keep it rolling |
 
 Re-uploading is safe: year-to-date files replace the months they cover, and duplicates are removed every time.
 

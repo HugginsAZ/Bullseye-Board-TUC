@@ -68,5 +68,12 @@
       "aliases": {},
       "forceMain": []
     }
-  ]
+  ],
+  "district": {
+    "code": "DSW",
+    "slug": "dsw",
+    "name": "DSW District",
+    "location": "DSW",
+    "theme": "r"
+  }
 }

@@ -12,6 +12,8 @@ const FIELD_DEPT=/^operations,\s*field/i;
 const NON_PERSON=/open tech|subcontract|name not found|administrator|employee,\s*inactive|unassigned|^code\|/i;
 // First month shown in the month picker (earlier months still feed year-to-date branch numbers)
 const START_MONTH='2026-09';
+// Per-customer cancel lists are kept from the month before START_MONTH on; older history keeps totals only
+const LIST_FROM=(()=>{ const [y,m]=START_MONTH.split('-').map(Number); return m===1?`${y-1}-12`:`${y}-${String(m-1).padStart(2,'0')}`; })();
 // Monthly targets: complete 98.5% of stops; cancel % no higher than 1.7% (gross dollars: cancelled annual $ ÷ active annual $,
 // the company Net Gain report's Cancellation %); void % no higher than 1.5% of total stops
 const TARGET={completion:98.5,cancel:1.7,void:1.5};
@@ -24,6 +26,7 @@ const SCORE_WEIGHTS={completion:53,workload:27,cancel:40,void:29,net:11};
 const SCORE_GROUPS=[['Route completion',['completion','workload']],['Cancel %',['cancel']],['Void %',['void']],['Net gain',['net']]];
 // PestPac name changes: old name -> current name (lowercase "last|first")
 let ALIASES={}; // per branch, from branches.json
+const DISTRICT_CODE='DSW'; // the district board's "branch code" (district/ in the repo)
 // People whose numbers always go to the main branch total, never ranked
 let FORCE_MAIN=[]; // per branch, from branches.json
 const AGE=['Under 1 yr','1–2 yrs','2–3 yrs','3–5 yrs','5–10 yrs','10+ yrs'];
@@ -97,12 +100,15 @@ const COMPANY_HOLIDAYS=['2026-01-01','2026-05-25','2026-07-03','2026-09-07','202
 function holidaySet(){ return new Set([...COMPANY_HOLIDAYS,...(state.roster?.holidays||[])]); }
 function isWorkday(dt,hol){ const wd=dt.getDay(); return wd>0&&wd<6&&!hol.has(dt.getFullYear()+'-'+pad(dt.getMonth()+1)+'-'+pad(dt.getDate())); }
 // Pace = workdays done through the data date ÷ all workdays in the month. Workdays are Mon–Fri minus company holidays.
+// The company's working-day count for a month, from the FY budget plan (e.g. October 2026 = 23); null if no plan is loaded
+function planWorkdays(month){ return state.roster?.plans?.[month.slice(0,4)]?.workdays?.[month]||null; }
 function workdayShare(month,asOf){
   const [y,m]=month.split('-').map(Number), last=new Date(y,m,0).getDate(), hol=holidaySet();
   const cut=asOf?new Date(asOf+'T12:00:00'):new Date();
   let total=0,done=0;
   for(let d=1;d<=last;d++){ const dt=new Date(y,m-1,d,12); if(isWorkday(dt,hol)){ total++; if(dt<=cut) done++; } }
-  return total?Math.max(done,1)/total:1;
+  const days=planWorkdays(month)||total; // match the company's working-day counts when the budget plan has them
+  return days?Math.min(Math.max(done,1)/days,1):1;
 }
 
 /* ---------- who is who ---------- */
@@ -367,6 +373,7 @@ function sortList(list,key,sec){ const s=SORTS[sec].find(x=>x.key===key)||{dir:-
 /* ---------- render ---------- */
 function defaultMonth(){ const ms=Object.keys(state.months).filter(m=>m>=START_MONTH).sort(); const full=ms.filter(m=>{const d=state.months[m];return d.cancel||d.sales||d.route;}); return full.pop()||ms.pop()||null; }
 function render(){
+  if(DISTRICT){ renderDistrict($('#content')); wireBody($('#content')); return; }
   document.querySelectorAll('[data-sec]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.sec===state.sec));
   document.querySelectorAll('[data-mode]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.mode===state.mode));
   const ms=Object.keys(state.months).filter(m=>m>=START_MONTH).sort();
@@ -716,11 +723,19 @@ function salesStatus(r){
 }
 function sblank(id,display,status,emp){ return {id,display,status,emp,rec:0,recVal:0,recTotal:0,ot:0,otRev:0,ex:0,early:0,spc:0,byM:{}}; }
 // Branch sales against the Power BI DOR budget, for the months that budget covers
+// Monthly sales budget from the FY budget plan (Sales Trend Tracker), as a DOR-shaped entry
+function planBudget(months){
+  let total={budget:0,recBudget:0,otBudget:0}, ok=false;
+  for(const m of months){ const b=state.roster.plans?.[m.slice(0,4)]?.budget?.[BRANCH]?.[m]; if(!b) return null; ok=true; total.budget+=b.total; total.recBudget+=b.rec; total.otBudget+=b.ot; }
+  return ok?{months,total,byClass:{},file:'FY budget plan'}:null;
+}
 function dorCompare(month,mode){
   const D=state.roster.dor||{}, cur=curYM();
-  let e=mode==='month'?D[month]:D.ytd;
+  let e;
+  if(mode==='month') e=planBudget([month])||D[month];
+  else { const ms=goalMonths(month,'ytd').filter(m=>m<cur); e=(ms.length&&planBudget(ms))||D.ytd; }
   if(!e) return mode==='month'&&month===cur&&D.ytd?{missing:'month',month}:null;
-  if(mode==='ytd'&&e.months.includes(cur)){
+  if(mode==='ytd'&&e.file!=='FY budget plan'&&e.months.includes(cur)){
     // the export includes the month under way: remove that month's budget so year to date is closed months only
     const cm=D[cur];
     if(!cm) return {missing:'subtract',month:cur};
@@ -1059,6 +1074,187 @@ function billTech(t,R){
   if(!msg.length) return '';
   return bill(esc(msg.join(' ')),`Bullseye Bill says, ${first}`);
 }
+/* ---------- trend-based projections (district board) ----------
+   Month end: what's in so far + the rest of the month at the pace this branch's last 3 years say to expect,
+   scaled to this year's level. Early in a month that leans on history; by the last week it's almost all actual.
+   Year end: actual closed months + this month's projection + every remaining month the same way.
+   Branches without history (e.g. a recent acquisition) fall back to their current pace. */
+const SERIES={
+  sales:d=>d?.salesClass?Object.values(d.salesClass).reduce((a,v)=>a+(v.total||0),0):d?.sales?Object.values(d.sales).reduce((a,v)=>a+(v.recVal||0)+(v.otRev||0)+(v.ex||0),0):null,
+  started:d=>d?.sales?Object.values(d.sales).reduce((a,v)=>a+(v.recVal||0),0):null,
+  cancels:d=>d?.cancel?Object.values(d.cancel).reduce((a,v)=>a+(v.prod||0),0):null,
+};
+const addM=(m,k)=>{ let [y,mo]=m.split('-').map(Number); mo+=k; while(mo>12){mo-=12;y++;} while(mo<1){mo+=12;y--;} return `${y}-${pad(mo)}`; };
+function seriesVal(metric,m){ return SERIES[metric](state.months[m]); }
+// What the last 3 years say month m should bring, scaled to how this year is running so far
+function trendExpected(metric,m){
+  const y=+m.slice(0,4), mo=m.slice(5), closed=[];
+  for(let k=1;k<+mo;k++) closed.push(`${y}-${pad(k)}`);
+  const cur=closed.map(x=>seriesVal(metric,x));
+  const vals=[];
+  for(let back=1;back<=3;back++){
+    const py=y-back, v=seriesVal(metric,`${py}-${mo}`); if(v==null) continue;
+    let ratio=1;
+    const pairs=closed.map((x,i)=>[cur[i],seriesVal(metric,`${py}-${x.slice(5)}`)]).filter(([a,b])=>a!=null&&b!=null);
+    const a=pairs.reduce((s,p)=>s+p[0],0), b=pairs.reduce((s,p)=>s+p[1],0);
+    if(pairs.length>=2&&b>0) ratio=Math.min(2,Math.max(0.5,a/b));
+    vals.push(v*ratio);
+  }
+  if(!vals.length) return null;
+  // with three years, take the middle one so a single unusual month (a big contract cancelling, say) doesn't skew it
+  if(vals.length>=3){ const v=[...vals].sort((x,y)=>x-y); return v[Math.floor(v.length/2)]; }
+  return vals.reduce((a,b)=>a+b,0)/vals.length;
+}
+// Month-end projection for a running total
+function trendEOM(metric,m,now,share){
+  if(now==null) return null;
+  if(share>=1) return now;
+  const hist=trendExpected(metric,m);
+  return hist!=null?now+(1-share)*hist:now/Math.max(share,0.02);
+}
+// Expected value for a future month: the 3-year trend, or this year's average month when there's no history
+function expectOrPace(metric,x,m){
+  const e=trendExpected(metric,x); if(e!=null) return e;
+  const y=m.slice(0,4), done=[]; for(let j=1;j<+m.slice(5);j++){ const v=seriesVal(metric,`${y}-${pad(j)}`); if(v!=null) done.push(v); }
+  return done.length?done.reduce((a,b)=>a+b,0)/done.length:null;
+}
+// Year-end projection: closed months + this month + the rest of the year
+function trendEOY(metric,m,eom){
+  const y=m.slice(0,4); let total=0, method='trend';
+  for(let k=1;k<=12;k++){ const x=`${y}-${pad(k)}`;
+    if(x<m){ total+=seriesVal(metric,x)||0; continue; }
+    if(x===m){ total+=eom||0; continue; }
+    let e=trendExpected(metric,x);
+    if(e==null){ // no history: average of this year's closed months
+      const done=[]; for(let j=1;j<+m.slice(5);j++){ const v=seriesVal(metric,`${y}-${pad(j)}`); if(v!=null) done.push(v); }
+      e=done.length?done.reduce((a,b)=>a+b,0)/done.length:(eom||0); method='pace'; }
+    total+=e; }
+  return {total,method};
+}
+/* ---------- DSW district board: month-end projections for every branch ---------- */
+let DISTRICT=false;
+function monthsAcrossBranches(){ const set=new Set(); for(const b of CFG.branches) for(const m of Object.keys(state.boards[b.code]?.months||{})) if(m>=START_MONTH) set.add(m); return [...set].sort(); }
+// project a running total to month end at the current pace (a closed month is already final)
+const toEOM=(v,share)=>v==null?null:share>=1?v:v/Math.max(share,0.02);
+function branchKpis(b,month){
+  activate(b.code);
+  const out={code:b.code,name:b.name,slug:b.slug};
+  if(!state.months[month]) return out;
+  const R=compute(month,'month'); if(!R) return out;
+  const B=R.B, el=R.el||0; out.el=el; out.asOf=R.asOf; out.final=el>=1;
+  const D=dorCompare(month,'month'), S=computeSales(month,'month');
+  const sNow=seriesVal('sales',month), sShare=D&&!D.missing?D.exp:(S?S.exp:el);
+  if(sNow!=null){ const proj=trendEOM('sales',month,sNow,sShare); out.sales={now:sNow,proj,budget:D&&!D.missing?D.budget:null,share:sShare,hist:trendExpected('sales',month)!=null}; }
+  if(B.stops&&B.completed!=null) out.comp={done:B.done,projDone:Math.min(B.stops,toEOM(B.done,el)),stops:B.stops};
+  if(B.cancelPct!=null){
+    // cancel $ to month end on the branch's trend, against the book at the start of the month
+    const cProj=B.cancelBasis==='dollars'&&B.bookStartVal>0?trendEOM('cancels',month,B.prod,el):null;
+    out.cancel={now:B.cancelPct,proj:cProj!=null?cProj/B.bookStartVal*100:toEOM(B.cancelPct,el),basis:B.cancelBasis,n:B.cancels,prod:B.prod,prodProj:cProj,book:B.bookStartVal}; }
+  if(B.voidRate!=null) out.voids={n:B.voidN,projN:toEOM(B.voidN,el),stops:B.stops,now:B.voidRate,proj:toEOM(B.voidRate,el)};
+  if(B.netGainVal!=null){
+    const st=seriesVal('started',month), cc=seriesVal('cancels',month);
+    const stP=trendEOM('started',month,st,sShare), ccP=trendEOM('cancels',month,cc,el);
+    out.net={now:B.netGainVal,proj:stP!=null&&ccP!=null?stP-ccP:toEOM(B.netGainVal,el),units:B.netGain,stP,ccP}; }
+  const bv=state.roster.bv?.[month];
+  const start=bv?bv.total.annual:(B.bookStartVal||null);
+  if(start!=null) out.bv={start,proj:start+(out.net?out.net.proj:0),src:bv?'bv':'book'};
+  // Year end against the FY budget plan
+  if(out.sales){
+    const e=trendEOY('sales',month,out.sales.proj), fy=state.roster.plans?.[month.slice(0,4)]?.budget?.[b.code];
+    out.eoy={sales:e.total,method:e.method,budget:fy?Object.values(fy).reduce((a,x)=>a+x.total,0):null};
+  }
+  if(out.net&&out.net.stP!=null&&out.net.ccP!=null){
+    const st=trendEOY('started',month,out.net.stP), cc=trendEOY('cancels',month,out.net.ccP);
+    out.eoy=out.eoy||{}; out.eoy.net=st.total-cc.total;
+    // business valuation at year end: start of this month + this month's net gain + the rest of the year's
+    if(out.bv){ let rest=0; const y=month.slice(0,4);
+      for(let k=+month.slice(5)+1;k<=12;k++){ const x=`${y}-${pad(k)}`; const s2=expectOrPace('started',x,month), c2=expectOrPace('cancels',x,month); if(s2!=null&&c2!=null) rest+=s2-c2; }
+      out.eoy.bv=out.bv.proj+rest; out.eoy.bvStartYear=out.bv.start; }
+  }
+  return out;
+}
+function districtTotals(rows,month){
+  activate(CFG.district.code);
+  const sum=(f)=>rows.reduce((a,r)=>a+(f(r)||0),0), any=f=>rows.some(r=>f(r)!=null);
+  const T={code:'DSW',name:CFG.district.name};
+  const shares=rows.map(r=>r.el).filter(x=>x!=null); T.el=shares.length?Math.min(...shares):0; T.final=shares.length&&shares.every(x=>x>=1);
+  if(any(r=>r.sales)){
+    const dDor=state.roster.dor?.[month];
+    const budAll=rows.every(r=>!r.sales||r.sales.budget!=null);
+    T.sales={now:sum(r=>r.sales?.now),proj:sum(r=>r.sales?.proj),budget:dDor?dDor.total.budget:(budAll?sum(r=>r.sales?.budget):null)};
+  }
+  if(any(r=>r.comp)) T.comp={done:sum(r=>r.comp?.done),projDone:sum(r=>r.comp?.projDone),stops:sum(r=>r.comp?.stops)};
+  const dol=rows.filter(r=>r.cancel&&r.cancel.basis==='dollars'&&r.cancel.book>0);
+  if(dol.length){ const book=dol.reduce((a,r)=>a+r.cancel.book,0); T.cancel={now:dol.reduce((a,r)=>a+r.cancel.prod,0)/book*100,proj:dol.reduce((a,r)=>a+r.cancel.proj*r.cancel.book,0)/book,n:sum(r=>r.cancel?.n),partial:dol.length<rows.filter(r=>r.cancel).length}; }
+  if(any(r=>r.voids)){ const st=sum(r=>r.voids?.stops); T.voids={n:sum(r=>r.voids?.n),projN:sum(r=>r.voids?.projN),stops:st,now:st?sum(r=>r.voids?.n)/st*100:null,proj:st?sum(r=>r.voids?.projN)/st*100:null}; }
+  if(any(r=>r.net)) T.net={now:sum(r=>r.net?.now),proj:sum(r=>r.net?.proj),units:sum(r=>r.net?.units)};
+  if(any(r=>r.eoy)){ T.eoy={sales:sum(r=>r.eoy?.sales),budget:rows.some(r=>r.eoy?.budget!=null)?sum(r=>r.eoy?.budget):null,net:any(r=>r.eoy?.net)?sum(r=>r.eoy?.net):null}; }
+  const dbv=state.roster.bv?.[month];
+  if(dbv||any(r=>r.bv)){ const start=dbv?dbv.total.annual:sum(r=>r.bv?.start); T.bv={start,proj:start+(T.net?T.net.proj:0),src:dbv?'bv':'sum'};
+    if(T.eoy&&any(r=>r.eoy?.bv!=null)) T.eoy.bv=T.bv.proj+sum(r=>r.eoy?.bv!=null?r.eoy.bv-r.bv.proj:0); }
+  return T;
+}
+function trackBadge(ok,final,words){ if(ok==null) return ''; const [y,n]=words||(final?['MET','MISSED']:['ON TRACK','OFF TRACK']); return `<span class="pb ${ok?'ok':'no'}">${ok?y:n}</span>`; }
+function kpiTiles(k){
+  const f=k.final, t=[];
+  const now=(s)=>`<span class="s">${s}</span>`;
+  if(k.sales){ const p=k.sales.budget?k.sales.proj/k.sales.budget*100:null;
+    t.push(['Sales to budget',p!=null?pct1(p):money(k.sales.proj),`${f?'final':'projected'} ${money(k.sales.proj)}${k.sales.budget?` of ${money(k.sales.budget)}`:' · no budget loaded'} · now ${money(k.sales.now)}`,p!=null?trackBadge(p>=100,f):'']); }
+  else t.push(['Sales to budget','—','no sales data yet','']);
+  if(k.comp){ const p=k.comp.stops?k.comp.projDone/k.comp.stops*100:null;
+    t.push(['Route completion',pct1(p),`${f?'final':'projected'} ${Math.round(k.comp.projDone).toLocaleString()} of ${k.comp.stops.toLocaleString()} · now ${k.comp.done.toLocaleString()} done · goal ${TARGET.completion}%`,trackBadge(p>=TARGET.completion,f)]); }
+  else t.push(['Route completion','—','no route report yet','']);
+  if(k.cancel) t.push(['Cancel %',pctG(k.cancel.proj,TARGET.cancel),`${f?'final':'projected'} · now ${pctG(k.cancel.now,TARGET.cancel)}${k.cancel.basis==='stops'?' (of stops; no customer list)':''}${k.cancel.partial?' · branches with a customer list':''} · goal ≤${TARGET.cancel}%`,trackBadge(k.cancel.proj<=TARGET.cancel,f)]);
+  else t.push(['Cancel %','—','no cancel detail yet','']);
+  if(k.voids) t.push(['Void %',pctG(k.voids.proj,TARGET.void),`${f?'final':'projected'} ${Math.round(k.voids.projN)} voids · now ${k.voids.n} of ${k.voids.stops.toLocaleString()} orders · goal ≤${TARGET.void}%`,trackBadge(k.voids.proj<=TARGET.void,f)]);
+  else t.push(['Void %','—','no route report yet','']);
+  if(k.net) t.push(['Net gain',fmt('netGainVal',k.net.proj),`${f?'final':'projected'} · now ${fmt('netGainVal',k.net.now)}${k.net.units!=null?` (${fmt('netGain',k.net.units)} customers)`:''}`,trackBadge(k.net.proj>=0,f,['GAINING','SHRINKING'])]);
+  else t.push(['Net gain','—','needs sales + cancel detail','']);
+  if(k.bv) t.push(['Business valuation',money(k.bv.proj),`${f?'end of month':'projected end of month'} · ${money(k.bv.start)} at the start${k.bv.src==='book'?' (from the customer list)':''} · ${fmt('netGainVal',k.bv.proj-k.bv.start)}`,trackBadge(k.bv.proj>=k.bv.start,f,['GROWING','SHRINKING'])]);
+  else t.push(['Business valuation','—','upload BV or a customer list','']);
+  return t;
+}
+function eoyTiles(k,month){
+  const e=k.eoy, y=month.slice(0,4), t=[];
+  if(!e) return t;
+  if(e.sales!=null){ const p=e.budget?e.sales/e.budget*100:null;
+    t.push([`Sales · FY${y.slice(2)} year end`,p!=null?pct1(p):money(e.sales),`projected ${money(e.sales)}${e.budget?` of ${money(e.budget)} budget`:' · no FY budget'}${e.method==='pace'?' · at this year’s pace (no history)':''}`,p!=null?trendBadge(p>=100):'']); }
+  if(e.net!=null) t.push([`Net gain · FY${y.slice(2)} year end`,fmt('netGainVal',e.net),'projected recurring $ started − $ cancelled for the year',`<span class="pb ${e.net>=0?'ok':'no'}">${e.net>=0?'GAINING':'SHRINKING'}</span>`]);
+  if(e.bv!=null) t.push([`Business valuation · Dec 31`,money(e.bv),`projected · ${fmt('netGainVal',e.bv-(k.bv?.proj??e.bv))} after this month`,`<span class="pb ${e.bv>=(k.bv?.start??e.bv)?'ok':'no'}">${e.bv>=(k.bv?.start??e.bv)?'GROWING':'SHRINKING'}</span>`]);
+  return t;
+}
+const trendBadge=ok=>`<span class="pb ${ok?'ok':'no'}">${ok?'ON TRACK':'OFF TRACK'}</span>`;
+function renderDistrict(c){
+  const ms=monthsAcrossBranches(), sel=$('#monthSel');
+  if(!ms.includes(state.dMonth)) state.dMonth=ms[ms.length-1]||null;
+  sel.innerHTML=ms.length?ms.slice().reverse().map(m=>`<option value="${m}" ${m===state.dMonth?'selected':''}>${esc(monthName(m))}</option>`).join(''):'<option>No reports yet</option>';
+  sel.disabled=!ms.length; sel.onchange=e=>{ state.dMonth=e.target.value; render(); };
+  document.querySelectorAll('.admin').forEach(el=>el.style.display='none');
+  $('#banner').innerHTML='';
+  if(!state.dMonth){ c.innerHTML='<div class="empty"><h2>No numbers posted yet</h2><p>Branch numbers appear here after the next update.</p></div>'; return; }
+  const m=state.dMonth, rows=CFG.branches.map(b=>branchKpis(b,m)), T=districtTotals(rows,m);
+  activate(CFG.district.code);
+  const workdays=planWorkdays(m)||(()=>{ const [y,mo]=m.split('-').map(Number), hol=holidaySet(); let n=0; for(let d=1;d<=new Date(y,mo,0).getDate();d++) if(isWorkday(new Date(y,mo-1,d,12),hol)) n++; return n; })();
+  const asOf=rows.map(r=>r.asOf).filter(Boolean).sort().pop();
+  // Bill's one-line read across the district
+  const keys=[['sales',r=>r.sales&&r.sales.budget?r.sales.proj>=r.sales.budget:null,'sales budget'],['comp',r=>r.comp?r.comp.projDone/r.comp.stops*100>=TARGET.completion:null,'route completion'],['cancel',r=>r.cancel?r.cancel.proj<=TARGET.cancel:null,'cancels'],['voids',r=>r.voids?r.voids.proj<=TARGET.void:null,'voids']];
+  const lines=keys.map(([k,f,lbl])=>{ const v=rows.map(r=>({n:r.code,ok:f(r)})).filter(x=>x.ok!=null); if(!v.length) return null; const off=v.filter(x=>!x.ok).map(x=>x.n); return off.length?`${lbl}: ${off.join(', ')} off track`:`${lbl}: every branch on track`; }).filter(Boolean);
+  c.innerHTML=`
+    <h3 class="dh">Month end</h3>
+    ${kpiStrip(kpiTiles(T),'district')}
+    ${T.eoy?`<h3 class="dh">Year end</h3>${kpiStrip(eoyTiles(T,m),'district')}`:''}
+    <p class="periodline">${esc(CFG.district.name)} · ${esc(monthName(m))} · ${T.final?'final month-end numbers':`projections blend the current pace with each branch’s last 3 years${asOf?`, data through ${esc(new Date(asOf+'T12:00').toLocaleDateString(undefined,{month:'short',day:'numeric'}))}`:''} · ${Math.round(T.el*workdays)} of ${workdays} workdays`}</p>
+    ${lines.length?bill(esc(lines.join('; ')+'.'),'Bullseye Bill’s district read'):''}
+    <div class="dgrid">${rows.map(r=>`<section class="dcard">
+      <header><h2>${esc(r.name)} <span class="sub">${esc(r.code)}</span></h2><a class="more" href="../${esc(r.slug)}/">Open board ›</a></header>
+      ${r.el==null?'<p class="sub">No numbers for this month yet.</p>':`<div class="mtiles">${[...kpiTiles(r),...eoyTiles(r,m)].map(([l,v,sub,badge])=>`<div class="mt ${badge&&badge.includes('pb no')?'off':badge?'onp':''}"><span class="l">${esc(l)}</span><span class="v">${v}</span>${badge||''}<span class="s">${sub}</span></div>`).join('')}</div>`}
+    </section>`).join('')}</div>
+    <details class="foot"><summary>How projections work</summary><div class="srcs sub">
+      <span>Month end: what’s in so far, plus the rest of the month at the pace each branch’s last 3 years say to expect for that month (scaled to how this year is running). Early in the month that leans on history; by the last week it’s almost all actual. Workdays follow the company’s working-day counts from the FY budget plan. Route completion and voids use the current pace. Closed months show final numbers.</span>
+      <span>Year end: actual closed months, plus this month’s projection, plus each remaining month on the same 3-year trend; compared with the FY budget plan. Branches without history use this year’s pace.</span>
+      <span>Sales: captured sales from Sales Details vs. the DOR sales budget. Route completion: completed vs. every order on the route completion report. Cancel %: annual $ cancelled ÷ the active book (company Net Gain method). Void %: voided orders ÷ total orders. Net gain: recurring $ started − $ cancelled.</span>
+      <span>Business valuation: the BV export’s beginning annual BV (or the customer list’s active annual $ when no BV is loaded), plus projected net gain.</span></div></details>`;
+}
 /* ---------- tech detail ---------- */
 function openTech(id){
   const R=compute(state.month,state.mode), Y=compute(state.month,'ytd');
@@ -1123,7 +1319,10 @@ function detect(rows){
     if(has('Cancel Date')&&has('Tech Name')) return {type:'cancel',hi:i,h};
     if(has('Employee Status Description')&&has('Location Description')) return {type:'employees',hi:i,h};
     if(has('Sales Type')&&has('Technician Name')) return {type:'sales',hi:i,h};
+    if(h.some(c=>/^FY'?\d\d Budget/i.test(c))&&rows.slice(i,i+6).some(r=>r.some(c=>String(c).trim()==='Working Days'))) return {type:'plan',hi:i,h};
     if(has('ClassCode')&&has('Sales Budget')) return {type:'dor',hi:i,h};
+    if(has('Service Class')&&has('Beginning Annual BV')) return {type:'bv',hi:i,h};
+    if(has('Started Recurring Sales')&&has('Net Gain')) return {type:'netgain',hi:i,h};
     if(has('Status')&&has('Technician Name')&&has('Work Date')) return {type:'route',hi:i,h};
     if(has('Tech 1')&&has('Work Date')) return {type:'open',hi:i,h};
   }
@@ -1138,11 +1337,46 @@ function parseReport(file,wb){
     const objs=objects(rows,d.hi,d.h).filter(inBranch);
     const out={type:d.type,file:file.name,months:{},codes:{},termedSeen:{}};
     const seen=n=>{ if(n?.termed) out.termedSeen[n.key]=n.termed; };
+    if(d.type==='netgain'){ const e=new Error('This is the Net Gain summary. The board doesn’t need it: it builds net gain from Sales Details and Cancel Detail, month by month and branch by branch. For history, upload a 3-year Cancel Detail export instead.'); e.userFacing=true; throw e; }
+    if(d.type==='plan'){
+      // FY budget plan: monthly working days and sales budget (total, recurring, one-time) for every branch. Read once a year.
+      const yy=String(rows[d.hi].find(c=>/^FY'?\d\d Budget/i.test(c))||'').match(/(\d\d)/), year=2000+(+yy[1]);
+      const MN=['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+      const hdr=rows.findIndex(r=>String(r[1]).trim()==='MUC'&&r.some(c=>/^jan/i.test(String(c).trim())));
+      const cols=[]; rows[hdr].forEach((c,j)=>{ const k=MN.indexOf(String(c).trim().slice(0,3).toLowerCase()); if(k>=0&&j<20&&!cols[k]) cols[k]=j; });
+      const wd=rows.find(r=>r.some(c=>String(c).trim()==='Working Days'));
+      const workdays={}; cols.forEach((j,k)=>{ const v=num(wd[j]); if(v) workdays[`${year}-${pad(k+1)}`]=v; });
+      const budget={}; const kind={Total:'total',Recurring:'rec','One-Time':'ot'};
+      for(const r of rows){ const t=kind[String(r[4]||'').trim()], code=String(r[3]||'').trim().toUpperCase();
+        if(!t||String(r[5]||'').trim()!=='Forecast'||!/^[A-Z]{2,4}$/.test(code)||code==='TOTAL') continue;
+        cols.forEach((j,k)=>{ const m=`${year}-${pad(k+1)}`, b=((budget[code]||(budget[code]={}))[m]||(budget[code][m]={total:0,rec:0,ot:0})); b[t]=num(r[j])||0; }); }
+      out.plan={year,workdays,budget};
+      const fy=c=>Object.values(budget[c]||{}).reduce((a,x)=>a+x.total,0);
+      out.summary=`FY${year} budget plan: working days for ${Object.keys(workdays).length} months; sales budget for ${Object.keys(budget).join(', ')}${budget[BRANCH]?` (${BRANCH} ${money(fy(BRANCH))} for the year)`:''}.`;
+      return out;
+    }
+    if(d.type==='bv'){
+      // Business valuation (BV) at the start of the month, by service class. One branch → that branch; several → the district.
+      const note=rows.map(r=>r.join(' ')).find(x=>/Applied filters/i.test(x))||'', nb=noteBranches(note);
+      if(nb.length>1){ if(BRANCH!==DISTRICT_CODE) return null; } else if(nb.length===1){ if(nb[0]!==BRANCH) return null; } else if(BRANCH!==(state.cur||BRANCH)) return null;
+      const byClass={}; let total=null;
+      for(const o of objs){ const c=String(o['Service Class']||'').trim(); if(!c||/applied filters/i.test(c)) continue;
+        const row={annual:num(o['Beginning Annual BV'])||0,monthly:num(o['Beginning Month BV'])||0};
+        if(/^total$/i.test(c)) total=row; else if(row.annual||row.monthly) byClass[c.toUpperCase()]=row; }
+      if(!total){ total={annual:0,monthly:0}; for(const r of Object.values(byClass)){ total.annual+=r.annual; total.monthly+=r.monthly; } }
+      const months=noteMonths(note);
+      if(!total.annual){ const e=new Error(months.length>1?'This BV export is blank. BV is a start-of-month snapshot, so Power BI shows nothing when several months are selected. Export one month (the current month) instead; the board works out earlier months from the sales and cancel history.':'This BV export has no values.'); e.userFacing=true; throw e; }
+      out.bv={months,total,byClass,branches:nb};
+      out.summary=`Business valuation at the start of ${months.map(m=>monthName(m)).join(', ')}: ${money(total.annual)} annual (${money(total.monthly)} monthly)${nb.length?` for ${nb.join(', ')}`:''}.`;
+      return out;
+    }
     if(d.type==='dor'){
       // Power BI DOR sales budget. The "Applied filters" note says which months it covers.
       const note=rows.map(r=>r.join(' ')).find(x=>/Applied filters/i.test(x))||'';
-      const bn=note.match(/Branch(?:Name)?\s+is\s+([A-Za-z]{2,4})\b/i);
-      if(bn?bn[1].toUpperCase()!==BRANCH:BRANCH!==(state.cur||BRANCH)) return null;
+      const nb=noteBranches(note);
+      if(nb.length>1){ if(BRANCH!==DISTRICT_CODE) return null; }            // all-branch budget → district board
+      else if(nb.length===1){ if(nb[0]!==BRANCH) return null; }
+      else if(BRANCH!==(state.cur||BRANCH)) return null;
       const MN=['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
       let months=[...note.matchAll(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.? (\d{4})\b/gi)].map(x=>x[2]+'-'+pad(MN.indexOf(x[1].slice(0,3).toLowerCase())+1));
       if(/current month/i.test(note)){ const last=months.sort().slice(-1)[0]; let cm=todayStr().slice(0,7);
@@ -1178,9 +1412,9 @@ function parseReport(file,wb){
         const m=ym(dt), M=out.months[m]||(out.months[m]={}), t=M[nm.key]||(M[nm.key]={n:0,prod:0,age:[0,0,0,0,0,0],ageProd:[0,0,0,0,0,0],reasons:{}});
         seenLine[lk]=t;
         { const cc=String(o['Service Class']||'OTHER').trim().toUpperCase()||'OTHER', CC=out.cancelClass[m]||(out.cancelClass[m]={}), cx=CC[cc]||(CC[cc]={n:0,prod:0}); cx.n++; cx.prod+=prod; }
-        { const lname=String(o['Location Company']||'').trim()||[o['Location Last Name'],o['Location First Name']].map(x=>String(x||'').trim()).filter(Boolean).join(', ');
+        if(m>=LIST_FROM){ const lname=String(o['Location Company']||'').trim()||[o['Location Last Name'],o['Location First Name']].map(x=>String(x||'').trim()).filter(Boolean).join(', ');
           (out.cancelList[m]||(out.cancelList[m]=[])).push({l:idStr(o['Location Code']),n:lname,r:String(o['Cancel Reason']||'OTHER').trim().toUpperCase(),s:String(o['Service Code']??'').trim().toUpperCase(),d:ymd(dt),k:nm.key,p:Math.round(prod)}); }
-        (out.cancelLocs[m]||(out.cancelLocs[m]=[])).push(idStr(o['Location Code'])+'|'+String(o['Service Code']??'').trim().toUpperCase());
+        if(m>=LIST_FROM) (out.cancelLocs[m]||(out.cancelLocs[m]=[])).push(idStr(o['Location Code'])+'|'+String(o['Service Code']??'').trim().toUpperCase());
         const sp=parseName(o['Salesperson Name']); if(sp){ const S=out.spCancel[m]||(out.spCancel[m]={}), x=S[sp.key]||(S[sp.key]={n:0,early:0}); x.n++; if(yrs!=null&&yrs<1) x.early++; }
         t.n++; t.prod+=prod; if(ai!=null){ t.age[ai]++; t.ageProd[ai]+=prod; }
         const r=String(o['Cancel Reason']||'OTHER').trim().toUpperCase()||'OTHER'; t.reasons[r]=(t.reasons[r]||0)+1; n++; }
@@ -1247,18 +1481,29 @@ function parseReport(file,wb){
 
 /* ---------- upload ---------- */
 function openUpload(){ state.pending=[]; $('#upFile').value=''; $('#fileList').innerHTML=''; $('#upStatus').textContent=''; $('#saveUp').disabled=true; $('#upDlg').showModal(); }
-const TYPE_LBL={dor:'DOR sales budget',base:'Customer list',cancel:'Cancel detail',sales:'Sales details',route:'Route completion details',open:'Open orders',employees:'Employment list'};
+const TYPE_LBL={plan:'FY budget plan',bv:'Business valuation',dor:'DOR sales budget',base:'Customer list',cancel:'Cancel detail',sales:'Sales details',route:'Route completion details',open:'Open orders',employees:'Employment list'};
+// Power BI exports carry an "Applied filters" note: which branches and months the numbers cover
+function noteBranches(note){ const m=note.match(/Branch(?:Name)?\s+is\s+([^\n]+)/i); return m?m[1].split(/,|\bor\b/i).map(x=>x.trim().toUpperCase()).filter(x=>/^[A-Z]{2,4}$/.test(x)):[]; }
+function noteMonths(note){
+  const MN=['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+  let months=[...note.matchAll(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.? (\d{4})\b/gi)].map(x=>x[2]+'-'+pad(MN.indexOf(x[1].slice(0,3).toLowerCase())+1));
+  if(/current month/i.test(note)){ const last=months.sort().slice(-1)[0]; let cm=todayStr().slice(0,7);
+    if(last){ const [y,mo]=last.split('-').map(Number); cm=mo===12?(y+1)+'-01':y+'-'+pad(mo+1); } months.push(cm); }
+  months=[...new Set(months)].sort(); return months.length?months:[todayStr().slice(0,7)];
+}
 // Run a parse with another branch's settings (report code, location, name fixes) without switching the page
 function withBranch(b,fn){ const prev=[BRANCH,LOCATION,ALIASES,FORCE_MAIN]; applyBranch(b); try{ return fn(); } finally{ [BRANCH,LOCATION,ALIASES,FORCE_MAIN]=prev; } }
 function hasContent(p){
   if(!p) return false;
   if(p.type==='employees') return (p.employees||[]).length>0;
   if(p.type==='dor') return !!p.dor;
+  if(p.type==='bv') return !!p.bv;
+  if(p.type==='plan') return !!p.plan;
   if(p.type==='base') return (p.base?.branch?.setups||0)>0;
   return Object.keys(p.months||{}).length>0;
 }
 async function onFiles(files){
-  const list=$('#fileList'), targets=CFG&&ADMIN?CFG.branches:[ME];
+  const list=$('#fileList'), targets=CFG&&ADMIN?[...CFG.branches,...(CFG.district?[CFG.district]:[])]:[ME];
   for(const f of files){
     const item=document.createElement('div'); item.className='fileitem'; item.innerHTML=`<b>${esc(f.name)}</b><span class="sub">Reading…</span>`; list.appendChild(item);
     try{
@@ -1291,10 +1536,12 @@ async function onFiles(files){
 function applyPending(pending){
   const roster=JSON.parse(JSON.stringify(state.roster)); roster.codes=roster.codes||{}; roster.termedSeen=roster.termedSeen||{}; roster.show=roster.show||{};
   const touched={}, newBases={}; let newNames=null; const at=new Date().toISOString();
-  const order=['employees','dor','base','cancel','sales','route','open'];
+  const order=['employees','plan','bv','dor','base','cancel','sales','route','open'];
   for(const p of [...pending].sort((a,b)=>order.indexOf(a.type)-order.indexOf(b.type))){
     Object.assign(roster.codes,p.codes); Object.assign(roster.termedSeen,p.termedSeen);
     if(p.type==='employees'){ roster.employees=p.employees; roster.employeesFile=p.file; roster.employeesAt=at; continue; }
+    if(p.type==='plan'){ roster.plans=roster.plans||{}; roster.plans[p.plan.year]=p.plan; continue; }
+    if(p.type==='bv'){ roster.bv=roster.bv||{}; for(const m of p.bv.months) roster.bv[m]={total:p.bv.total,byClass:p.bv.byClass,file:p.file,at}; continue; }
     if(p.type==='dor'){ roster.dor=roster.dor||{}; const key=p.dor.months.length===1?p.dor.months[0]:'ytd'; roster.dor[key]={...p.dor,file:p.file,at}; continue; }
     if(p.type==='base'){ newBases[p.asOf]={...p.base,at}; newNames={asOf:p.asOf,names:p.locnames}; continue; }
     for(const [m,data] of Object.entries(p.months)){
@@ -1347,19 +1594,20 @@ function applyLook(b){
   // light background colors only apply in light mode, so dark mode keeps its own background
   const dark=document.documentElement.dataset.theme==='dark'||(document.documentElement.dataset.theme!=='light'&&window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches);
   if(th) for(const [k,v] of Object.entries(th)){ if(dark&&(k==='paper'||k==='line')) continue; root.setProperty('--'+k,v); }
-  const tag=document.querySelector('.hero-tag'); if(tag) tag.textContent=`${b.name} route health`;
+  const tag=document.querySelector('.hero-tag'); if(tag) tag.textContent=b.code===DISTRICT_CODE?`${b.name} · month-end outlook`:`${b.name} route health`;
   document.title=`Bullseye Board · ${b.name}`;
   const mt=document.querySelector('meta[name="theme-color"]'); if(mt&&th?.brand) mt.content=th.brand;
 }
 function markDirty(){ state.dirty=true; (state.dirtySet||(state.dirtySet=new Set())).add(state.cur||BRANCH); }
 function snapshot(){ return {version:1,at:state.dataAt,months:state.months,bases:state.bases,locnames:state.locnames,roster:state.roster}; }
 function stash(){ if(state.cur&&state.boards) state.boards[state.cur]=snapshot(); }
-function activate(code){ const b=CFG.branches.find(x=>x.code===code); applyBranch(b); state.cur=code; applyData(state.boards[code]||{}); }
+function allUnits(){ return [...(CFG?.branches||[]),...(CFG?.district?[CFG.district]:[])]; }
+function activate(code){ const b=allUnits().find(x=>x.code===code); applyBranch(b); state.cur=code; applyData(state.boards[code]||{}); }
 function switchBranch(code){ if(code===state.cur) return; stash(); activate(code); applyLook(CFG.branches.find(x=>x.code===code)); state.month=null; render(); $('#branchSel').value=code; }
 function bannerHTML(){
   if(ADMIN){
     const pend=[...(state.dirtySet||[])];
-    return `<div class="banner">Update mode for every branch · now showing <b>${esc(CFG?CFG.branches.find(b=>b.code===state.cur)?.name||state.cur:BRANCH)}</b>. Upload reports here (they’re split by branch automatically), then <b>Publish all branches</b>.${pend.length?` <b>Not published yet: ${esc(pend.join(', '))}.</b>`:''}</div>`;
+    return `<div class="banner">Update mode for every branch and the ${esc(CFG?.district?.name||'district')} board · now showing <b>${esc(CFG?allUnits().find(b=>b.code===state.cur)?.name||state.cur:BRANCH)}</b>. Upload reports here (they’re split by branch automatically), then <b>Publish all branches</b>.${pend.length?` <b>Not published yet: ${esc(pend.join(', '))}.</b>`:''}</div>`;
   }
   if(state.loadError) return `<div class="banner">Couldn’t load the board data. ${esc(state.loadError)}</div>`;
   return state.dataAt?`<div class="asof">Numbers as of ${esc(new Date(state.dataAt).toLocaleString(undefined,{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}))}</div>`:'';
@@ -1436,7 +1684,7 @@ async function publishAll(){
   try{
     const ref=await gh('/git/ref/heads/'+br,tok), base=ref.object.sha, commit=await gh('/git/commits/'+base,tok);
     const tree=[];
-    for(const code of codes){ const b=CFG.branches.find(x=>x.code===code);
+    for(const code of codes){ const b=allUnits().find(x=>x.code===code);
       const blob=await gh('/git/blobs',tok,{method:'POST',body:JSON.stringify({content:JSON.stringify(boardData(incl,state.boards[code])),encoding:'utf-8'})});
       tree.push({path:`${b.slug}/board.json`,mode:'100644',type:'blob',sha:blob.sha}); }
     const nt=await gh('/git/trees',tok,{method:'POST',body:JSON.stringify({base_tree:commit.tree.sha,tree})});
@@ -1453,7 +1701,7 @@ async function downloadAll(){
   stash(); const st=$('#pubStatus');
   try{ if(!window.JSZip) await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js');
     const zip=new JSZip(), incl=$('#inclNames').checked;
-    for(const b of CFG.branches) zip.file(`${b.slug}/board.json`,JSON.stringify(boardData(incl,state.boards[b.code]||{})));
+    for(const b of allUnits()) zip.file(`${b.slug}/board.json`,JSON.stringify(boardData(incl,state.boards[b.code]||{})));
     download(`bullseye-boards-${todayStr()}.zip`,await zip.generateAsync({type:'blob'}));
     st.className='status ok'; st.textContent='Downloaded. Unzip and drag the branch folders into the repo on GitHub.';
   }catch(e){ st.className='status err'; st.textContent='Couldn’t build the download.'; }
@@ -1475,13 +1723,23 @@ async function init(){
   state.dirtySet=new Set();
   try{ const r=await fetch('../branches.json',{cache:'no-store'}); if(r.ok) CFG=await r.json(); }catch(e){}
   const code=String(window.BOARD_CODE||'TUC').toUpperCase();
-  ME=CFG?.branches?.find(b=>b.code===code)||{code,slug:code.toLowerCase(),name:code,location:code};
+  ME=allUnits().find(b=>b.code===code)||{code,slug:code.toLowerCase(),name:code,location:code};
+  if(CFG?.district&&code===CFG.district.code){
+    // District board: read every branch's published numbers, no upload tools
+    DISTRICT=true; ADMIN=false; state.canEdit=false; applyBranch(ME); applyLook(ME); document.body.classList.add('district');
+    document.querySelectorAll('#secSeg, [data-mode]').forEach(el=>{ const g=el.closest('.seg'); if(g) g.style.display='none'; });
+    state.boards={};
+    await Promise.all(allUnits().map(async b=>{ try{ const r=await fetch(`../${b.slug}/board.json`,{cache:'no-store'}); state.boards[b.code]=r.ok?await r.json():{}; }catch(e){ state.boards[b.code]={}; } }));
+    state.cur=ME.code; activate(ME.code); render();
+    let seen=Date.now(); document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible'&&Date.now()-seen>10*60*1000) location.reload(); else if(document.visibilityState==='hidden') seen=Date.now(); });
+    return;
+  }
   applyBranch(ME); applyLook(ME);
   if(ADMIN&&(!CFG||CFG.admin!==ME.code)) ADMIN=false; // only the admin branch's page can update
   state.canEdit=ADMIN; state.cur=ME.code;
   if(ADMIN){
     state.boards={};
-    await Promise.all(CFG.branches.map(async b=>{ try{ const r=await fetch(`../${b.slug}/board.json`,{cache:'no-store'}); state.boards[b.code]=r.ok?await r.json():{}; }catch(e){ state.boards[b.code]={}; } }));
+    await Promise.all(allUnits().map(async b=>{ try{ const r=await fetch(`../${b.slug}/board.json`,{cache:'no-store'}); state.boards[b.code]=r.ok?await r.json():{}; }catch(e){ state.boards[b.code]={}; } }));
     applyData(state.boards[ME.code]||{});
   } else {
     try{
