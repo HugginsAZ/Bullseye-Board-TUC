@@ -1607,7 +1607,7 @@ function switchBranch(code){ if(code===state.cur) return; stash(); activate(code
 function bannerHTML(){
   if(ADMIN){
     const pend=[...(state.dirtySet||[])];
-    return `<div class="banner">Update mode for every branch and the ${esc(CFG?.district?.name||'district')} board · now showing <b>${esc(CFG?allUnits().find(b=>b.code===state.cur)?.name||state.cur:BRANCH)}</b>. Upload reports here (they’re split by branch automatically), then <b>Publish all branches</b>.${pend.length?` <b>Not published yet: ${esc(pend.join(', '))}.</b>`:''}</div>`;
+    return `<div class="banner">Update mode for every branch and the ${esc(CFG?.district?.name||'district')} board · numbers loaded from ${esc(state.loadedFrom||'the site')} at ${esc((state.loadedTime||new Date()).toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'}))} · now showing <b>${esc(CFG?allUnits().find(b=>b.code===state.cur)?.name||state.cur:BRANCH)}</b>. Upload reports here (they’re split by branch automatically), then <b>Publish all branches</b>.${pend.length?` <b>Not published yet: ${esc(pend.join(', '))}.</b>`:''}</div>`;
   }
   if(state.loadError) return `<div class="banner">Couldn’t load the board data. ${esc(state.loadError)}</div>`;
   return state.dataAt?`<div class="asof">Numbers as of ${esc(new Date(state.dataAt).toLocaleString(undefined,{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}))}</div>`:'';
@@ -1674,6 +1674,11 @@ async function gh(path,tok,opt={}){
   if(!r.ok){ const e=new Error('GitHub answered '+r.status); e.status=r.status; throw e; }
   return r.json();
 }
+async function ghRaw(path,tok){
+  const r=await fetch(`https://api.github.com/repos/${CFG.repo}/contents/${path}?ref=${CFG.gitBranch||'main'}&t=${Date.now()}`,{headers:{Authorization:'Bearer '+tok,Accept:'application/vnd.github.raw','X-GitHub-Api-Version':'2022-11-28'},cache:'no-store'});
+  if(r.status===404) return null; if(!r.ok){ const e=new Error('GitHub answered '+r.status); e.status=r.status; throw e; }
+  return r.json();
+}
 async function publishAll(){
   const tok=getToken(); if(!tok) return openTokenDialog(publishAll);
   stash();
@@ -1682,14 +1687,22 @@ async function publishAll(){
   const btn=$('#publishBtn'); btn.disabled=true; st.className='status'; st.textContent=`Publishing ${codes.join(', ')}…`;
   const incl=$('#inclNames').checked, br=CFG.gitBranch||'main';
   try{
+    // Safety check: never publish over numbers someone (or another open tab) published after this page loaded them
+    const stale=[];
+    for(const code of codes){ const b=allUnits().find(x=>x.code===code); const remote=await ghRaw(`${b.slug}/board.json`,tok);
+      if(remote&&remote.at&&(!state.loadedAt?.[code]||remote.at>state.loadedAt[code])) stale.push(b.name); }
+    if(stale.length){ st.className='status err'; st.textContent=`Newer numbers were published for ${stale.join(', ')} after this page loaded them, so nothing was published. Reload this page (Ctrl+Shift+R), upload your reports again, then publish.`; btn.disabled=false; return; }
+    const stamp=new Date().toISOString();
     const ref=await gh('/git/ref/heads/'+br,tok), base=ref.object.sha, commit=await gh('/git/commits/'+base,tok);
     const tree=[];
     for(const code of codes){ const b=allUnits().find(x=>x.code===code);
-      const blob=await gh('/git/blobs',tok,{method:'POST',body:JSON.stringify({content:JSON.stringify(boardData(incl,state.boards[code])),encoding:'utf-8'})});
+      const data=boardData(incl,state.boards[code]); data.at=stamp;
+      const blob=await gh('/git/blobs',tok,{method:'POST',body:JSON.stringify({content:JSON.stringify(data),encoding:'utf-8'})});
       tree.push({path:`${b.slug}/board.json`,mode:'100644',type:'blob',sha:blob.sha}); }
     const nt=await gh('/git/trees',tok,{method:'POST',body:JSON.stringify({base_tree:commit.tree.sha,tree})});
     const nc=await gh('/git/commits',tok,{method:'POST',body:JSON.stringify({message:`Update boards: ${codes.join(', ')} (${todayStr()})`,tree:nt.sha,parents:[base]})});
     await gh('/git/refs/heads/'+br,tok,{method:'PATCH',body:JSON.stringify({sha:nc.sha})});
+    for(const code of codes) state.loadedAt[code]=stamp;
     state.dirtySet.clear(); state.dirty=false; $('#banner').innerHTML=bannerHTML();
     st.className='status ok'; st.textContent=`Published ${codes.join(', ')}. Pages update in a minute or two.`;
   }catch(e){
@@ -1738,8 +1751,13 @@ async function init(){
   if(ADMIN&&(!CFG||CFG.admin!==ME.code)) ADMIN=false; // only the admin branch's page can update
   state.canEdit=ADMIN; state.cur=ME.code;
   if(ADMIN){
-    state.boards={};
-    await Promise.all(allUnits().map(async b=>{ try{ const r=await fetch(`../${b.slug}/board.json`,{cache:'no-store'}); state.boards[b.code]=r.ok?await r.json():{}; }catch(e){ state.boards[b.code]={}; } }));
+    state.boards={}; state.loadedAt={}; const tok=getToken(); state.loadedFrom=tok?'GitHub':'the site';
+    await Promise.all(allUnits().map(async b=>{
+      let d=null;
+      if(tok){ try{ d=await ghRaw(`${b.slug}/board.json`,tok); }catch(e){ state.loadedFrom='the site'; } }
+      if(!d){ try{ const r=await fetch(`../${b.slug}/board.json`,{cache:'no-store'}); d=r.ok?await r.json():{}; }catch(e){ d={}; } }
+      state.boards[b.code]=d||{}; state.loadedAt[b.code]=d?.at||null; }));
+    state.loadedTime=new Date();
     applyData(state.boards[ME.code]||{});
   } else {
     try{
