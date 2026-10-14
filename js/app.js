@@ -1145,7 +1145,10 @@ function branchKpis(b,month){
   const D=dorCompare(month,'month'), S=computeSales(month,'month');
   const sNow=seriesVal('sales',month), sShare=D&&!D.missing?D.exp:(S?S.exp:el);
   if(sNow!=null){ const proj=trendEOM('sales',month,sNow,sShare); out.sales={now:sNow,proj,budget:D&&!D.missing?D.budget:null,share:sShare,hist:trendExpected('sales',month)!=null}; }
-  if(B.stops&&B.completed!=null) out.comp={done:B.done,projDone:Math.min(B.stops,toEOM(B.done,el)),stops:B.stops};
+  if(B.stops&&B.completed!=null){
+    // Voided orders stay in total stops but can never be completed, so the most a branch can reach is stops − projected voids
+    const projVoids=Math.min(B.stops,toEOM(B.voidN||0,el)), ceiling=B.stops-projVoids;
+    out.comp={done:B.done,projDone:Math.max(B.done,Math.min(ceiling,toEOM(B.done,el))),stops:B.stops,projVoids,ceiling}; }
   if(B.cancelPct!=null){
     // cancel $ to month end on the branch's trend, against the book at the start of the month
     const cProj=B.cancelBasis==='dollars'&&B.bookStartVal>0?trendEOM('cancels',month,B.prod,el):null;
@@ -1183,7 +1186,7 @@ function districtTotals(rows,month){
     const budAll=rows.every(r=>!r.sales||r.sales.budget!=null);
     T.sales={now:sum(r=>r.sales?.now),proj:sum(r=>r.sales?.proj),budget:dDor?dDor.total.budget:(budAll?sum(r=>r.sales?.budget):null)};
   }
-  if(any(r=>r.comp)) T.comp={done:sum(r=>r.comp?.done),projDone:sum(r=>r.comp?.projDone),stops:sum(r=>r.comp?.stops)};
+  if(any(r=>r.comp)) T.comp={done:sum(r=>r.comp?.done),projDone:sum(r=>r.comp?.projDone),stops:sum(r=>r.comp?.stops),projVoids:sum(r=>r.comp?.projVoids),ceiling:sum(r=>r.comp?.ceiling)};
   const dol=rows.filter(r=>r.cancel&&r.cancel.basis==='dollars'&&r.cancel.book>0);
   if(dol.length){ const book=dol.reduce((a,r)=>a+r.cancel.book,0); T.cancel={now:dol.reduce((a,r)=>a+r.cancel.prod,0)/book*100,proj:dol.reduce((a,r)=>a+r.cancel.proj*r.cancel.book,0)/book,n:sum(r=>r.cancel?.n),partial:dol.length<rows.filter(r=>r.cancel).length}; }
   if(any(r=>r.voids)){ const st=sum(r=>r.voids?.stops); T.voids={n:sum(r=>r.voids?.n),projN:sum(r=>r.voids?.projN),stops:st,now:st?sum(r=>r.voids?.n)/st*100:null,proj:st?sum(r=>r.voids?.projN)/st*100:null}; }
@@ -1202,7 +1205,8 @@ function kpiTiles(k){
     t.push(['Sales to budget',p!=null?pct1(p):money(k.sales.proj),`${f?'final':'projected'} ${money(k.sales.proj)}${k.sales.budget?` of ${money(k.sales.budget)}`:' · no budget loaded'} · now ${money(k.sales.now)}`,p!=null?trackBadge(p>=100,f):'']); }
   else t.push(['Sales to budget','—','no sales data yet','']);
   if(k.comp){ const p=k.comp.stops?k.comp.projDone/k.comp.stops*100:null;
-    t.push(['Route completion',pct1(p),`${f?'final':'projected'} ${Math.round(k.comp.projDone).toLocaleString()} of ${k.comp.stops.toLocaleString()} · now ${k.comp.done.toLocaleString()} done · goal ${TARGET.completion}%`,trackBadge(p>=TARGET.completion,f)]); }
+    const cap=k.comp.stops?k.comp.ceiling/k.comp.stops*100:null;
+    t.push(['Route completion',pctG(p,TARGET.completion),`${f?'final':'projected'} ${Math.round(k.comp.projDone).toLocaleString()} of ${k.comp.stops.toLocaleString()} · now ${k.comp.done.toLocaleString()} done · ${Math.round(k.comp.projVoids)} projected voids cap it at ${pctG(cap,TARGET.completion)} · goal ${TARGET.completion}%`,trackBadge(p>=TARGET.completion,f)]); }
   else t.push(['Route completion','—','no route report yet','']);
   if(k.cancel) t.push(['Cancel %',pctG(k.cancel.proj,TARGET.cancel),`${f?'final':'projected'} · now ${pctG(k.cancel.now,TARGET.cancel)}${k.cancel.basis==='stops'?' (of stops; no customer list)':''}${k.cancel.partial?' · branches with a customer list':''} · goal ≤${TARGET.cancel}%`,trackBadge(k.cancel.proj<=TARGET.cancel,f)]);
   else t.push(['Cancel %','—','no cancel detail yet','']);
@@ -1250,7 +1254,7 @@ function renderDistrict(c){
       ${r.el==null?'<p class="sub">No numbers for this month yet.</p>':`<div class="mtiles">${[...kpiTiles(r),...eoyTiles(r,m)].map(([l,v,sub,badge])=>`<div class="mt ${badge&&badge.includes('pb no')?'off':badge?'onp':''}"><span class="l">${esc(l)}</span><span class="v">${v}</span>${badge||''}<span class="s">${sub}</span></div>`).join('')}</div>`}
     </section>`).join('')}</div>
     <details class="foot"><summary>How projections work</summary><div class="srcs sub">
-      <span>Month end: what’s in so far, plus the rest of the month at the pace each branch’s last 3 years say to expect for that month (scaled to how this year is running). Early in the month that leans on history; by the last week it’s almost all actual. Workdays follow the company’s working-day counts from the FY budget plan. Route completion and voids use the current pace. Closed months show final numbers.</span>
+      <span>Month end: what’s in so far, plus the rest of the month at the pace each branch’s last 3 years say to expect for that month (scaled to how this year is running). Early in the month that leans on history; by the last week it’s almost all actual. Workdays follow the company’s working-day counts from the FY budget plan. Route completion and voids use the current pace; voided orders stay in total stops, so projected completion can never pass 100% minus the projected void rate. Closed months show final numbers.</span>
       <span>Year end: actual closed months, plus this month’s projection, plus each remaining month on the same 3-year trend; compared with the FY budget plan. Branches without history use this year’s pace.</span>
       <span>Sales: captured sales from Sales Details vs. the DOR sales budget. Route completion: completed vs. every order on the route completion report. Cancel %: annual $ cancelled ÷ the active book (company Net Gain method). Void %: voided orders ÷ total orders. Net gain: recurring $ started − $ cancelled.</span>
       <span>Business valuation: the BV export’s beginning annual BV (or the customer list’s active annual $ when no BV is loaded), plus projected net gain.</span></div></details>`;
