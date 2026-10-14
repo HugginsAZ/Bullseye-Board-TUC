@@ -296,7 +296,12 @@ function compute(month,mode){
     // Stops: open orders at the start of the month plus every sale added since (cancellations never take stops away);
     // without open orders, every order on the route report (not-started already removed)
     t.newStops=has.open&&has.growth?(t.adds||0)+(t.otUnits||0):0; t.startStops=has.open?t.stops:null;
-    t.stops=has.open?t.stops+t.newStops:has.route?(t.done+t.voided+t.cvN+t.open+(t.acq||0)):null;
+    // Stops come from the route completion report whenever it's loaded: it reflects today's route assignments (new techs,
+    // reassigned routes) and every stop added after the 1st, the same totals as Power BI's Route Completion by Technician.
+    // The open-orders file is only the fallback before the month's first route report.
+    // Acquisition voids and not-started sales are left out, like Power BI's totals.
+    if(has.route){ t.stops=t.done+t.voided+t.cvN+t.open; t.newStops=0; t.startStops=null; }
+    else t.stops=has.open?t.stops+t.newStops:null;
     // Cancel % (company Net Gain report): annual $ cancelled ÷ active annual $ on the book at the start of the period.
     // Techs: the annual $ on their route in the customer list, plus what cancelled, minus what started, this period.
     // Without a customer list it falls back to cancels ÷ total stops.
@@ -307,7 +312,8 @@ function compute(month,mode){
     // voided because the customer cancelled; not-started sales and acquisition voids are left out.
     // Uploads from before order counts were kept fall back to voided orders ÷ total stops.
     t.voidN=t.voided+t.cvN; t.voidVal=t.voidAmt+t.cvAmt;
-    t.voidRate=has.route?(t.schedN>0?t.voidN/t.schedN*100:(t.stops?t.voidN/t.stops*100:null)):null; t.voidBasis=t.schedN>0?'orders':'stops';
+    // void % shares the completion denominator: every order on the route report except not-started and acquisition voids
+    t.voidRate=has.route&&t.stops?t.voidN/t.stops*100:null; t.voidBasis='orders';
     t.adds=has.growth?t.adds:null; t.otUnits=has.growth?t.otUnits:null;
     t.netGain=has.growth&&has.cancel?t.adds-t.c:null;
     // Net gain $ = recurring annual $ started on the route − annual $ cancelled (company Net Gain report)
@@ -353,7 +359,7 @@ function compute(month,mode){
     for(const [k,f] of Object.entries(scoreDims)){ const v=t.p[f]; if(v==null) continue; const w=SCORE_WEIGHTS[k]; t.scoreParts[k]={pts:v*w,w}; got+=v*w; max+=w; }
     t.health=max?Math.round(got/max*SCORE_MAX):null; t.p.health=t.health==null?null:t.health/SCORE_MAX; // points out of 160
   }
-  return {board,termed:all.filter(t=>t.status==='termed'),staff:all.filter(t=>t.status==='staff'),other:all.filter(t=>t.status==='other'),main:all.filter(t=>t.status==='main'),B,has,ms,el,asOf,cancelDim,netDim:board.some(t=>t.netGainVal!=null)?'netGainVal':'netGain',staleGrowth,base,techRateOK,cross,ytd:mode==='ytd',stopsSrc:has.open?'open':'route'};
+  return {board,termed:all.filter(t=>t.status==='termed'),staff:all.filter(t=>t.status==='staff'),other:all.filter(t=>t.status==='other'),main:all.filter(t=>t.status==='main'),B,has,ms,el,asOf,cancelDim,netDim:board.some(t=>t.netGainVal!=null)?'netGainVal':'netGain',staleGrowth,base,techRateOK,cross,ytd:mode==='ytd',stopsSrc:has.route?'route':'open'};
 }
 function sortList(list,key,sec){ const s=SORTS[sec].find(x=>x.key===key)||{dir:-1};
   return [...list].sort((a,b)=>{ if(a[key]==null&&b[key]==null) return a.display.localeCompare(b.display); if(a[key]==null) return 1; if(b[key]==null) return -1; return (a[key]-b[key])*s.dir||a.display.localeCompare(b.display); }); }
@@ -421,7 +427,7 @@ function renderBoard(c){
     cancelShare:'Each tech’s share of all branch cancellations.',
     voidN:`Voided orders on each tech’s route this ${state.mode==='month'?'month':'period'}, fewest first. Includes orders voided because the customer cancelled; not-started sales and acquisitions are left out. The badge follows the void % goal (no more than ${TARGET.void}% of scheduled orders).`,
     voidRate:`Voided orders as a share of all orders scheduled for the ${state.mode==='month'?'month':'period'} (a unit count), the way the company measures it. Includes orders voided because the customer cancelled; not-started sales and acquisitions are left out. Goal: no more than ${TARGET.void}% by month end.`,
-    comp:`Stops completed out of stops scheduled${R.stopsSrc==='open'?' (open orders at the start of the month)':' (every order on the route completion report; upload open orders on the 1st for the true starting count)'}. Goal: ${TARGET.completion}% by month end${R.el<1?`, so about ${(TARGET.completion*R.el).toFixed(1)}% by now`:''}.`,
+    comp:`Stops completed out of stops assigned${R.stopsSrc==='route'?' (every order on the route completion report: current route assignments, including stops added during the month)':' (open orders at the start of the month, until the first route completion report is uploaded)'}. Goal: ${TARGET.completion}% by month end${R.el<1?`, so about ${(TARGET.completion*R.el).toFixed(1)}% by now`:''}.`,
     completed:'Services completed. Higher is better.', adds:'New recurring customers placed on the tech’s route, counted as units.', stops:'Stops on the books from the open orders report at the start of the month.',
     netGain:'Customers started on the tech’s route minus customers who cancelled. One cancel needs one new start to break even.',
     netGainVal:'Recurring annual dollars started on the tech’s route minus annual dollars cancelled, the Net Gain in the company report. Above zero means the route grew.',
@@ -473,7 +479,7 @@ function routeTiles(R,ytd){
   const B=R.B, el=R.el, t=[], L=!ytd&&state.mode==='month';
   if(B.stops!=null&&(B.completed!=null||!ytd)) t.push(['Stops completed',B.comp!=null?pct1(B.comp):'—',(B.completed!=null?`${B.completed.toLocaleString()} of ${B.stops.toLocaleString()} stops`:`${B.stops.toLocaleString()} stops scheduled · upload route completion to track`)+(B.newStops?` (${B.startStops.toLocaleString()} at the start + ${B.newStops} new sales)`:'')+` · goal ${TARGET.completion}%`,paceBadge('completion',B.comp,el,ytd)]);
   if(B.cancels!=null) t.push(['Cancel %',B.cancelPct!=null?pctG(B.cancelPct,TARGET.cancel):'—',B.cancelBasis==='dollars'?`${money(B.prod)} cancelled of ${money(B.bookStartVal)} active annual $ · ${B.cancels} setup${B.cancels===1?'':'s'} · goal ≤${ytd?(TARGET.cancel*el).toFixed(1):TARGET.cancel}%${L?' · tap to see each':''}`:`${ytd&&B.stops!=null?B.cR:B.cancels} setups cancelled${B.stops!=null?` of ${B.stops.toLocaleString()} stops${ytd?' (months with route data)':''}`:''} · goal ≤${TARGET.cancel}%${L?' · tap to see each':''}`,paceBadge('cancel',B.cancelPct,el,ytd,B.cancelBasis),L?'cancel':null]);
-  if(B.voidRate!=null) t.push(['Void %',pctG(B.voidRate,TARGET.void),`${B.voidN} voided of ${(B.voidBasis==='orders'?B.schedN:B.stops).toLocaleString()} ${B.voidBasis==='orders'?'orders':'stops'} · ${money(B.voidVal)} not billed · goal ≤${TARGET.void}%${L?' · tap to see each':''}`,paceBadge('void',B.voidRate,el,ytd),L?'void':null]);
+  if(B.voidRate!=null) t.push(['Void %',pctG(B.voidRate,TARGET.void),`${B.voidN} voided of ${B.stops.toLocaleString()} orders · ${money(B.voidVal)} not billed · goal ≤${TARGET.void}%${L?' · tap to see each':''}`,paceBadge('void',B.voidRate,el,ytd),L?'void':null]);
   // Branch tile stays in dollars (company Net Gain view); tech rows use customer counts
   if(B.netGainVal!=null) t.push(['Net gain',fmt('netGainVal',B.netGainVal),`${money(B.addVal)} started − ${money(B.prod)} cancelled · ${B.adds??'—'} started, ${B.cancels} cancelled`,`<span class="pb ${B.netGainVal>=0?'ok':'no'}">${B.netGainVal>=0?'GAINING':'SHRINKING'}</span>`]);
   else if(B.netGain!=null) t.push(['Net gain',fmt('netGain',B.netGain),`${cust(B.adds)} started − ${B.c} cancelled`,`<span class="pb ${B.netGain>=0?'ok':'no'}">${B.netGain>=0?'GAINING':'SHRINKING'}</span>`]);
@@ -575,12 +581,12 @@ function branchBody(sec){
       ${X.unmatched.length?`<ul class="plain">${X.unmatched.map(u=>`<li>Location ${esc(u.loc)} · ${esc(u.svc)} · ${esc(u.name)} · ${esc(monthName(u.m,true))}</li>`).join('')}</ul><p class="sub">These usually show up in the next cancel detail; once they do, they’re matched automatically.</p>`:''}`);
     if(B.voidRate!=null){
       const vr=Object.entries(B.vReasons).sort((a,b)=>b[1]-a[1]);
-      body.push(`<h3>Voids</h3><p>Orders voided this ${ytd?'year':'month'}, counted the way the company report counts them: every void except not-started sales and acquisitions, including orders voided because the customer cancelled.</p>`+rowsTable(['',''],[['Total stops',B.stops.toLocaleString()],['Completed services',B.done.toLocaleString()],['Voided orders',`${B.voidN}${B.cvN?` (${B.cvN} because the customer cancelled)`:''}`],...(B.voidBasis==='orders'?[['Orders scheduled',B.schedN.toLocaleString()]]:[]),['Revenue not billed',money(B.voidVal)],[`<b>Void %</b> (${B.voidBasis==='orders'?'voided orders ÷ orders scheduled':'of total stops'}; goal ≤${TARGET.void}%)`,`<b>${pctG(B.voidRate,TARGET.void)}</b> ${paceBadge('void',B.voidRate,R.el,ytd)}`],...(B.open?[['Still open',B.open]]:[])])
+      body.push(`<h3>Voids</h3><p>Orders voided this ${ytd?'year':'month'}, counted the way the company report counts them: every void except not-started sales and acquisitions, including orders voided because the customer cancelled.</p>`+rowsTable(['',''],[['Total orders',B.stops.toLocaleString()],['Completed',B.done.toLocaleString()],['Voided orders',`${B.voidN}${B.cvN?` (${B.cvN} because the customer cancelled)`:''}`],['Revenue not billed',money(B.voidVal)],[`<b>Void %</b> (voided orders ÷ total orders; goal ≤${TARGET.void}%)`,`<b>${pctG(B.voidRate,TARGET.void)}</b> ${paceBadge('void',B.voidRate,R.el,ytd)}`],...(B.open?[['Still open',B.open]]:[])])
         +(vr.length||B.cvN?`<h3>Void reasons</h3>`+rowsTable(['Reason','Voids'],[...vr,...(B.cvN?[['CANCELED',B.cvN]]:[])].sort((a,b)=>b[1]-a[1]).map(([r,n])=>[esc(VOID_LBL[r]||tc(r)),n])):''));
     }
     if(X.nsN) body.push(`<p class="sub">${X.nsN} not-started services (${money(X.nsAmt)}) were removed. These are sales that backed out before the first visit.</p>`);
     if(B.stops!=null) body.push(`<h3>Stops</h3>`+rowsTable(['',''],[
-      [R.stopsSrc==='open'?'Stops scheduled (open orders at the start of the month)':'Stops scheduled (orders on the route completion report)',B.stops.toLocaleString()],
+      [R.stopsSrc==='open'?'Stops assigned (open orders at the start of the month)':'Stops assigned (route completion report, current assignments)',B.stops.toLocaleString()],
       ...(B.stopsProd?[['Value on the books',money(B.stopsProd)]]:[]),
       ...(B.completed!=null?[['Stops completed',B.completed.toLocaleString()],[`<b>Completed</b> (goal ${TARGET.completion}%)`,`<b>${pct(B.comp)}</b> ${paceBadge('completion',B.comp,R.el,ytd)}`]]:[]),
       ...(B.ahead!=null?[[B.ahead>=0?'Stops ahead of pace':'Stops behind pace',Math.abs(B.ahead)]]:[])]));
@@ -1070,7 +1076,7 @@ function openTech(id){
   if(t.cancelPct!=null) route.push([`Cancel % (goal ≤${TARGET.cancel}%)`,`${pctG(t.cancelPct,TARGET.cancel)} ${paceBadge('cancel',t.cancelPct,R.el)}<br><span class="sub">${t.cancelBasis==='dollars'?`${money(t.prod)} of ${money(t.bookStartVal)} on their book`:`${t.cancels} of ${t.stops} stops`}</span>`,pct1(ta('cancelPct')),rank('cancelPct','route')]);
   if(t.cancelRate!=null) route.push(['Cancels per 100 services',t.cancelRate.toFixed(1),ta('cancelRate')?.toFixed(1)??'—',rank('cancelRate','route')]);
   if(t.cancelShare!=null) route.push(['Share of branch cancels',pct(t.cancelShare),pct(ta('cancelShare')),rank('cancelShare','route')]);
-  if(t.voidRate!=null) route.push(['Voids',`${t.voidN} ${paceBadge('void',t.voidRate,R.el)}<br><span class="sub">${pctG(t.voidRate,TARGET.void)} of ${t.voidBasis==='orders'?`${t.schedN} orders`:`${t.stops} stops`} · ${money(t.voidVal)} not billed · goal ≤${TARGET.void}%</span>`,fmt('voidN',ta('voidN')),rank('voidN','route')]);
+  if(t.voidRate!=null) route.push(['Voids',`${t.voidN} ${paceBadge('void',t.voidRate,R.el)}<br><span class="sub">${pctG(t.voidRate,TARGET.void)} of ${t.stops} orders · ${money(t.voidVal)} not billed · goal ≤${TARGET.void}%</span>`,fmt('voidN',ta('voidN')),rank('voidN','route')]);
   if(t.adds!=null) route.push(['Recurring adds',t.adds,fmt('adds',ta('adds')),rank('adds','route')]);
   if(t.otUnits!=null) route.push(['One-time jobs sold',t.otUnits,fmt('otUnits',ta('otUnits')),'']);
   if(t.netGainVal!=null) route.push(['Net gain $',`${fmt('netGainVal',t.netGainVal)}<br><span class="sub">${money(t.addVal||0)} started − ${money(t.prod)} cancelled</span>`,fmt('netGainVal',ta('netGainVal')),rank('netGainVal','route')]);
