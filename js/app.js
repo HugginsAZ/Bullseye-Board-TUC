@@ -552,7 +552,7 @@ function billRoute(R,ytd){
 }
 function kpiStrip(tiles,sec){
   if(!tiles.length) return '';
-  return `<div class="kpis">${tiles.map(([l,v,sub,badge,list])=>`<button type="button" class="kpi ${badge&&badge.includes('pb no')?'off':badge?'onp':''}" ${list?`data-list="${list}" data-who="branch"`:`data-branch="${sec}"`}><span class="l">${esc(l)}</span><span class="v">${v}</span>${badge||''}<span class="s">${sub||''}</span></button>`).join('')}</div>`;
+  return `<div class="kpis">${tiles.map(([l,v,sub,badge,list,cls])=>`<button type="button" class="kpi ${cls||(badge&&badge.includes('pb no')?'off':badge?'onp':'')}" ${list?`data-list="${list}" data-who="branch"`:`data-branch="${sec}"`}><span class="l">${esc(l)}</span><span class="v">${v}</span>${badge||''}<span class="s">${sub||''}</span></button>`).join('')}</div>`;
 }
 const VOID_LBL={CANCELED:'Customer cancelled',REFUSE:'Customer refused',"NO PAY":'Non-payment',MISSED:'Missed',"NOT HOME":'Not home',ANIMALS:'Animals on site',"ADMN ERROR":'Admin error',ACQ:'Acquisition','NO REASON':'No reason given'};
 function rowsTable(head,rows){ return `<div class="tbl"><table><thead><tr>${head.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${r.map(c=>`<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`; }
@@ -826,12 +826,17 @@ function computeSales(month,mode){
   const by=s=>all.filter(t=>t.status===s);
   return {board:by('board'),termed:by('termed'),outside:by('outside'),staff:by('staff'),main:by('main'),other:by('other'),B,exp,n:gm.length,budMonths,unit:'value',stale,cancels,hasGoals:budMonths.length>0,dor:dorCompare(month,mode)};
 }
+// Backlog (pending sales) for a month, only from a recent snapshot of that month
+function backlogFor(month){ const b=state.roster.backlog; if(!b||month!==curYM()) return null; const m=b.months?.[month]; return m&&m.total>0?{...m,asOf:b.asOf,file:b.file}:null; }
+function backlogLater(month){ const b=state.roster.backlog; if(!b) return 0; return Object.entries(b.months||{}).filter(([m])=>m>month&&m.slice(0,4)===month.slice(0,4)).reduce((a,[,v])=>a+v.total,0); }
+function backlogBySp(month){ const bl=backlogFor(month), out={}; if(!bl) return out; for(const [k,v] of Object.entries(bl.bySp||{})){ const id=resolveKey(k).id, o=out[id]||(out[id]={total:0,rec:0,ot:0,n:0}); for(const f of ['total','rec','ot','n']) o[f]+=v[f]; } return out; }
+const MAYBE='<span class="pb maybe">PENDING</span>';
 function dorTile(D){
-  if(D&&D.missing) return [['Branch vs. DOR budget','—',D.missing==='month'?`upload ${monthName(D.month,true)}’s DOR budget (filtered to that month) to track it`:`upload ${monthName(D.month,true)}’s DOR budget so it can be taken out of year to date`]];
+  if(D&&D.missing) return [['Branch vs. budget','—',D.missing==='month'?`upload ${monthName(D.month,true)}’s DOR budget (filtered to that month) to track it`:`upload ${monthName(D.month,true)}’s DOR budget so it can be taken out of year to date`]];
   if(!D||D.pct==null) return [];
   const span=D.months.length===1?monthName(D.months[0],true):`${monthName(D.months[0],true)}–${monthName(D.months[D.months.length-1],true)}`;
   const ok=D.pct>=D.exp*100, done=D.exp>=1;
-  return [['Branch vs. DOR budget',pct1(D.pct),`${money(D.cap.total)} of ${money(D.budget)} · ${span}`,`<span class="pb ${ok?'ok':'no'}">${done?(D.pct>=100?'BUDGET MET':'BUDGET MISSED'):(ok?'ON PACE':'OFF PACE')}</span>`]];
+  return [['Branch vs. budget',pct1(D.pct),`${money(D.cap.total)} of ${money(D.budget)} · ${span}`,`<span class="pb ${ok?'ok':'no'}">${done?(D.pct>=100?'BUDGET MET':'BUDGET MISSED'):(ok?'ON PACE':'OFF PACE')}</span>`]];
 }
 function dorHTML(D){
   if(!D) return '';
@@ -847,14 +852,17 @@ function dorHTML(D){
     ${D.needsResync?'<p class="sub" style="color:var(--low)">Re-upload the Sales Details export so excess initial and service-class totals are included for every month.</p>':''}`;
 }
 function goalBand(pct,exp){ if(pct==null) return 'c-none'; const r=exp>0?pct/(exp*100):1; return r>=1?'c-good':r>=0.8?'c-mid':'c-low'; }
-function goalBar(label,amt,goal,pctV,exp,isMoney){
+function goalBar(label,amt,goal,pctV,exp,isMoney,pend){
   const a=isMoney?money(amt):Math.round(amt).toLocaleString();
-  if(goal==null) return `<span class="gb c-none"><span class="gbl">${label}</span><span class="gbt"></span><span class="gbv">${a} · no budget</span></span>`;
+  const pTxt=pend>0?` <span class="pend">+ ${money(pend)} pending</span>`:'';
+  if(goal==null) return `<span class="gb c-none"><span class="gbl">${label}</span><span class="gbt"></span><span class="gbv">${a} · no budget${pTxt}</span></span>`;
   const g=isMoney?money(goal):Math.round(goal).toLocaleString();
-  return `<span class="gb ${goalBand(pctV,exp)}"><span class="gbl">${label}</span><span class="gbt"><span class="gbf" style="width:${Math.min(pctV,100)}%"></span>${exp<1?`<span class="gbx" style="left:${exp*100}%"></span>`:''}</span><span class="gbv"><b>${pct(pctV)}</b> · ${a} of ${g} budget</span></span>`;
+  const solid=Math.min(pctV,100), dash=pend>0?Math.min(pend/goal*100,100-solid):0;
+  return `<span class="gb ${goalBand(pctV,exp)}"><span class="gbl">${label}</span><span class="gbt"><span class="gbf" style="width:${solid}%"></span>${dash>0?`<span class="gbp" style="left:${solid}%;width:${dash}%" title="Backlog: sold but not completed yet. It may still cancel or move to next month."></span>`:''}${exp<1?`<span class="gbx" style="left:${exp*100}%"></span>`:''}</span><span class="gbv"><b>${pct(pctV)}</b> · ${a} of ${g} budget${pTxt}</span></span>`;
 }
 function renderSales(c){
   const S=computeSales(state.month,state.mode);
+  const BL=state.mode==='month'?backlogFor(state.month):null, BLsp=state.mode==='month'?backlogBySp(state.month):{};
   const goalsBtn=state.canEdit===false?'':`<button type="button" class="ghost admin" id="goalsBtn">Sales budgets</button>`;
   if(!S){ c.innerHTML=`<div class="empty"><h2>No sales details for ${esc(periodLabel())}</h2><p>Upload the sales details export covering this period.</p>${state.canEdit===false?'':'<button class="btn" type="button" id="emptyUp">Upload reports</button>'}</div>${sourcesBlock()}`; return; }
   const B=S.B, isVal=S.unit!=='accounts';
@@ -877,6 +885,7 @@ function renderSales(c){
     ${S.stale?'<p class="banner" style="border-radius:8px">Some months were uploaded before sales were credited to salespeople. Re-upload the sales details export to fix them.</p>':''}
     ${kpiStrip([
       ...dorTile(S.dor),
+      ...(BL?[['Backlog this month',money(BL.total),`${BL.n} sold, not completed yet (${money(BL.rec)} recurring, ${money(BL.ot)} one-time & initial) · could back out or slip to next month · as of ${new Date(BL.asOf+'T12:00').toLocaleDateString(undefined,{month:'short',day:'numeric'})}`,MAYBE,null,'maybe']]:[]),
       ...(S.hasGoals?[['Salespeople vs. budget',B.goalPct!=null?pct1(B.goalPct):'—',`${money(B.captured)} of ${money(B.budget)} budgeted`,B.goalPct!=null?`<span class="pb ${B.goalPct>=S.exp*100?'ok':'no'}">${S.exp>=1?(B.goalPct>=100?'BUDGET MET':'BUDGET MISSED'):(B.goalPct>=S.exp*100?'ON PACE':'OFF PACE')}</span>`:'']]:[]),
       ['Recurring sold',money(B.recVal),`${B.rec} setups${B.recPct!=null?` · ${pct1(B.recPct)} of budget`:''}`],
       ['One-time & initial',money(B.otAll),`${B.ot} jobs + initial${B.otPct!=null?` · ${pct1(B.otPct)} of budget`:''}`],
@@ -896,7 +905,7 @@ function renderSales(c){
         <span class="rank">${t[sk]==null?'–':i+1}</span>
         <span class="who"><span class="name">${esc(t.display)}</span><span class="chips">${t.goalPct!=null?`<span>${S.exp>=1?`<span class="pb ${t.goalPct>=100?'ok':'no'}">${t.goalPct>=100?'BUDGET MET':'BUDGET MISSED'}</span>`:`<span class="pb ${t.goalPct>=S.exp*100?'ok':'no'}">${t.goalPct>=S.exp*100?'ON PACE':'OFF PACE'}</span>`}</span>`:''}${sk==='proj'&&projecting?`<span><b>${money(t.overall)}</b> so far</span>`:''}${sk!=='score'&&t.score!=null?`<span>score <b>${t.score}</b></span>`:''}<span><b>${t.rec}</b> recurring</span><span><b>${money(t.recVal)}</b>/yr</span><span><b>${t.ot}</b> one-time</span>${t.earlyRate!=null?`<span><b>${t.early}</b> first-year cancels</span>`:''}</span></span>
         <span class="score"><span class="num">${big}</span></span>
-        <span class="goals">${goalBar('Total',t.budget?t.captured:t.overall,t.budget,t.goalPct,S.exp,true)}${goalBar('Recurring',t.recGoal?t.recCap:t.recAmt,t.recGoal,t.recPct,S.exp,true)}${goalBar('One-time & initial',t.otGoal?t.otCap:t.otAll,t.otGoal,t.otPct,S.exp,true)}</span></button></li>`;
+        <span class="goals">${goalBar('Total',t.budget?t.captured:t.overall,t.budget,t.goalPct,S.exp,true,BLsp[t.id]?.total)}${goalBar('Recurring',t.recGoal?t.recCap:t.recAmt,t.recGoal,t.recPct,S.exp,true,BLsp[t.id]?.rec)}${goalBar('One-time & initial',t.otGoal?t.otCap:t.otAll,t.otGoal,t.otPct,S.exp,true,BLsp[t.id]?.ot)}</span></button></li>`;
     }).join('')}</ol>${sourcesBlock()}`;
   c.querySelectorAll('[data-sort]').forEach(b=>b.onclick=()=>{state.sort.sales=b.dataset.sort;render();});
 }
@@ -1144,7 +1153,7 @@ function branchKpis(b,month){
   const B=R.B, el=R.el||0; out.el=el; out.asOf=R.asOf; out.final=el>=1;
   const D=dorCompare(month,'month'), S=computeSales(month,'month');
   const sNow=seriesVal('sales',month), sShare=D&&!D.missing?D.exp:(S?S.exp:el);
-  if(sNow!=null){ const proj=trendEOM('sales',month,sNow,sShare); out.sales={now:sNow,proj,budget:D&&!D.missing?D.budget:null,share:sShare,hist:trendExpected('sales',month)!=null}; }
+  if(sNow!=null){ const proj=trendEOM('sales',month,sNow,sShare); out.sales={now:sNow,proj,budget:D&&!D.missing?D.budget:null,share:sShare,hist:trendExpected('sales',month)!=null,backlog:backlogFor(month)?.total||0}; }
   if(B.stops&&B.completed!=null){
     // Voided orders stay in total stops but can never be completed, so the most a branch can reach is stops − projected voids
     const projVoids=Math.min(B.stops,toEOM(B.voidN||0,el)), ceiling=B.stops-projVoids;
@@ -1164,7 +1173,7 @@ function branchKpis(b,month){
   // Year end against the FY budget plan
   if(out.sales){
     const e=trendEOY('sales',month,out.sales.proj), fy=state.roster.plans?.[month.slice(0,4)]?.budget?.[b.code];
-    out.eoy={sales:e.total,method:e.method,budget:fy?Object.values(fy).reduce((a,x)=>a+x.total,0):null};
+    out.eoy={sales:e.total,method:e.method,budget:fy?Object.values(fy).reduce((a,x)=>a+x.total,0):null,backlogLater:backlogLater(month)};
   }
   if(out.net&&out.net.stP!=null&&out.net.ccP!=null){
     const st=trendEOY('started',month,out.net.stP), cc=trendEOY('cancels',month,out.net.ccP);
@@ -1184,14 +1193,14 @@ function districtTotals(rows,month){
   if(any(r=>r.sales)){
     const dDor=state.roster.dor?.[month];
     const budAll=rows.every(r=>!r.sales||r.sales.budget!=null);
-    T.sales={now:sum(r=>r.sales?.now),proj:sum(r=>r.sales?.proj),budget:dDor?dDor.total.budget:(budAll?sum(r=>r.sales?.budget):null)};
+    T.sales={now:sum(r=>r.sales?.now),proj:sum(r=>r.sales?.proj),backlog:sum(r=>r.sales?.backlog),budget:dDor?dDor.total.budget:(budAll?sum(r=>r.sales?.budget):null)};
   }
   if(any(r=>r.comp)) T.comp={done:sum(r=>r.comp?.done),projDone:sum(r=>r.comp?.projDone),stops:sum(r=>r.comp?.stops),projVoids:sum(r=>r.comp?.projVoids),ceiling:sum(r=>r.comp?.ceiling)};
   const dol=rows.filter(r=>r.cancel&&r.cancel.basis==='dollars'&&r.cancel.book>0);
   if(dol.length){ const book=dol.reduce((a,r)=>a+r.cancel.book,0); T.cancel={now:dol.reduce((a,r)=>a+r.cancel.prod,0)/book*100,proj:dol.reduce((a,r)=>a+r.cancel.proj*r.cancel.book,0)/book,n:sum(r=>r.cancel?.n),partial:dol.length<rows.filter(r=>r.cancel).length}; }
   if(any(r=>r.voids)){ const st=sum(r=>r.voids?.stops); T.voids={n:sum(r=>r.voids?.n),projN:sum(r=>r.voids?.projN),stops:st,now:st?sum(r=>r.voids?.n)/st*100:null,proj:st?sum(r=>r.voids?.projN)/st*100:null}; }
   if(any(r=>r.net)) T.net={now:sum(r=>r.net?.now),proj:sum(r=>r.net?.proj),units:sum(r=>r.net?.units)};
-  if(any(r=>r.eoy)){ T.eoy={sales:sum(r=>r.eoy?.sales),budget:rows.some(r=>r.eoy?.budget!=null)?sum(r=>r.eoy?.budget):null,net:any(r=>r.eoy?.net)?sum(r=>r.eoy?.net):null}; }
+  if(any(r=>r.eoy)){ T.eoy={backlogLater:sum(r=>r.eoy?.backlogLater),sales:sum(r=>r.eoy?.sales),budget:rows.some(r=>r.eoy?.budget!=null)?sum(r=>r.eoy?.budget):null,net:any(r=>r.eoy?.net)?sum(r=>r.eoy?.net):null}; }
   const dbv=state.roster.bv?.[month];
   if(dbv||any(r=>r.bv)){ const start=dbv?dbv.total.annual:sum(r=>r.bv?.start); T.bv={start,proj:start+(T.net?T.net.proj:0),src:dbv?'bv':'sum'};
     if(T.eoy&&any(r=>r.eoy?.bv!=null)) T.eoy.bv=T.bv.proj+sum(r=>r.eoy?.bv!=null?r.eoy.bv-r.bv.proj:0); }
@@ -1202,7 +1211,8 @@ function kpiTiles(k){
   const f=k.final, t=[];
   const now=(s)=>`<span class="s">${s}</span>`;
   if(k.sales){ const p=k.sales.budget?k.sales.proj/k.sales.budget*100:null;
-    t.push(['Sales to budget',p!=null?pct1(p):money(k.sales.proj),`${f?'final':'projected'} ${money(k.sales.proj)}${k.sales.budget?` of ${money(k.sales.budget)}`:' · no budget loaded'} · now ${money(k.sales.now)}`,p!=null?trackBadge(p>=100,f):'']); }
+    const bl=!f&&k.sales.backlog>0?k.sales.backlog:0;
+    t.push(['Sales to budget',p!=null?pct1(p):money(k.sales.proj),`${f?'final':'projected'} ${money(k.sales.proj)}${k.sales.budget?` of ${money(k.sales.budget)}`:' · no budget loaded'} · now ${money(k.sales.now)}${bl?` · <span class="pend">+ ${money(bl)} backlog pending${k.sales.budget?` (sold + backlog = ${pct1((k.sales.now+bl)/k.sales.budget*100)} of budget)`:''}</span>`:''}`,p!=null?trackBadge(p>=100,f):'']); }
   else t.push(['Sales to budget','—','no sales data yet','']);
   if(k.comp){ const p=k.comp.stops?k.comp.projDone/k.comp.stops*100:null;
     const cap=k.comp.stops?k.comp.ceiling/k.comp.stops*100:null;
@@ -1222,7 +1232,7 @@ function eoyTiles(k,month){
   const e=k.eoy, y=month.slice(0,4), t=[];
   if(!e) return t;
   if(e.sales!=null){ const p=e.budget?e.sales/e.budget*100:null;
-    t.push([`Sales · FY${y.slice(2)} year end`,p!=null?pct1(p):money(e.sales),`projected ${money(e.sales)}${e.budget?` of ${money(e.budget)} budget`:' · no FY budget'}${e.method==='pace'?' · at this year’s pace (no history)':''}`,p!=null?trendBadge(p>=100):'']); }
+    t.push([`Sales · FY${y.slice(2)} year end`,p!=null?pct1(p):money(e.sales),`projected ${money(e.sales)}${e.budget?` of ${money(e.budget)} budget`:' · no FY budget'}${e.method==='pace'?' · at this year’s pace (no history)':''}${e.backlogLater>0?` · <span class="pend">+ ${money(e.backlogLater)} backlog scheduled in later months (pending)</span>`:''}`,p!=null?trendBadge(p>=100):'']); }
   if(e.net!=null) t.push([`Net gain · FY${y.slice(2)} year end`,fmt('netGainVal',e.net),'projected recurring $ started − $ cancelled for the year',`<span class="pb ${e.net>=0?'ok':'no'}">${e.net>=0?'GAINING':'SHRINKING'}</span>`]);
   if(e.bv!=null) t.push([`Business valuation · Dec 31`,money(e.bv),`projected · ${fmt('netGainVal',e.bv-(k.bv?.proj??e.bv))} after this month`,`<span class="pb ${e.bv>=(k.bv?.start??e.bv)?'ok':'no'}">${e.bv>=(k.bv?.start??e.bv)?'GROWING':'SHRINKING'}</span>`]);
   return t;
@@ -1255,6 +1265,7 @@ function renderDistrict(c){
     </section>`).join('')}</div>
     <details class="foot"><summary>How projections work</summary><div class="srcs sub">
       <span>Month end: what’s in so far, plus the rest of the month at the pace each branch’s last 3 years say to expect for that month (scaled to how this year is running). Early in the month that leans on history; by the last week it’s almost all actual. Workdays follow the company’s working-day counts from the FY budget plan. Route completion and voids use the current pace; voided orders stay in total stops, so projected completion can never pass 100% minus the projected void rate. Closed months show final numbers.</span>
+      <span>Backlog (dashed): sales already written but not completed. It’s shown next to the projections, not added in, because a customer can back out or the work can slip into the next month. Only this month’s work dates count toward the month; later work dates show on the year-end tiles.</span>
       <span>Year end: actual closed months, plus this month’s projection, plus each remaining month on the same 3-year trend; compared with the FY budget plan. Branches without history use this year’s pace.</span>
       <span>Sales: captured sales from Sales Details vs. the DOR sales budget. Route completion: completed vs. every order on the route completion report. Cancel %: annual $ cancelled ÷ the active book (company Net Gain method). Void %: voided orders ÷ total orders. Net gain: recurring $ started − $ cancelled.</span>
       <span>Business valuation: the BV export’s beginning annual BV (or the customer list’s active annual $ when no BV is loaded), plus projected net gain.</span></div></details>`;
@@ -1327,6 +1338,7 @@ function detect(rows){
     if(has('ClassCode')&&has('Sales Budget')) return {type:'dor',hi:i,h};
     if(has('Service Class')&&has('Beginning Annual BV')) return {type:'bv',hi:i,h};
     if(has('Started Recurring Sales')&&has('Net Gain')) return {type:'netgain',hi:i,h};
+    if(has('Bucket')&&has('Work Date')&&has('Total Sales')) return {type:'backlog',hi:i,h};
     if(has('Status')&&has('Technician Name')&&has('Work Date')) return {type:'route',hi:i,h};
     if(has('Tech 1')&&has('Work Date')) return {type:'open',hi:i,h};
   }
@@ -1341,6 +1353,21 @@ function parseReport(file,wb){
     const objs=objects(rows,d.hi,d.h).filter(inBranch);
     const out={type:d.type,file:file.name,months:{},codes:{},termedSeen:{}};
     const seen=n=>{ if(n?.termed) out.termedSeen[n.key]=n.termed; };
+    if(d.type==='backlog'){
+      // Backlog: sales written but not completed yet, by work date. A snapshot: each upload replaces the last one.
+      const months={}; let n=0, latest='';
+      for(const o of objs){ const wd=toDate(o['Work Date']); if(!wd) continue;
+        const total=num(o['Total Sales'])||0; if(total<=0) continue;
+        const isRec=/recur/i.test(o['Sales Type']||''), rec=isRec?(num(o['Annual Value'])||0):0;
+        const m=ym(wd), M=months[m]||(months[m]={total:0,rec:0,ot:0,n:0,bySp:{}});
+        const sp=parseName(o['Salesperson'])||{key:'unassigned|'}, x=M.bySp[sp.key]||(M.bySp[sp.key]={total:0,rec:0,ot:0,n:0});
+        for(const t of [M,x]){ t.total+=total; t.rec+=rec; t.ot+=total-rec; t.n++; }
+        n++; const ad=toDate(o['Add Date']); if(ad){ const a=ymd(ad); if(a>latest) latest=a; } }
+      const cur=curYM(), now=months[cur], later=Object.entries(months).filter(([m])=>m>cur).reduce((a,[,v])=>a+v.total,0);
+      out.backlog={months,asOf:latest||todayStr()};
+      out.summary=`${n} pending sales: ${now?`${money(now.total)} scheduled in ${monthName(cur)} (${now.n} orders)`:`nothing for ${monthName(cur)}`}${later?`, ${money(later)} in later months`:''}. Replaces the previous backlog.`;
+      return out;
+    }
     if(d.type==='netgain'){ const e=new Error('This is the Net Gain summary. The board doesn’t need it: it builds net gain from Sales Details and Cancel Detail, month by month and branch by branch. For history, upload a 3-year Cancel Detail export instead.'); e.userFacing=true; throw e; }
     if(d.type==='plan'){
       // FY budget plan: monthly working days and sales budget (total, recurring, one-time) for every branch. Read once a year.
@@ -1485,7 +1512,7 @@ function parseReport(file,wb){
 
 /* ---------- upload ---------- */
 function openUpload(){ state.pending=[]; $('#upFile').value=''; $('#fileList').innerHTML=''; $('#upStatus').textContent=''; $('#saveUp').disabled=true; $('#upDlg').showModal(); }
-const TYPE_LBL={plan:'FY budget plan',bv:'Business valuation',dor:'DOR sales budget',base:'Customer list',cancel:'Cancel detail',sales:'Sales details',route:'Route completion details',open:'Open orders',employees:'Employment list'};
+const TYPE_LBL={backlog:'Sales backlog',plan:'FY budget plan',bv:'Business valuation',dor:'DOR sales budget',base:'Customer list',cancel:'Cancel detail',sales:'Sales details',route:'Route completion details',open:'Open orders',employees:'Employment list'};
 // Power BI exports carry an "Applied filters" note: which branches and months the numbers cover
 function noteBranches(note){ const m=note.match(/Branch(?:Name)?\s+is\s+([^\n]+)/i); return m?m[1].split(/,|\bor\b/i).map(x=>x.trim().toUpperCase()).filter(x=>/^[A-Z]{2,4}$/.test(x)):[]; }
 function noteMonths(note){
@@ -1503,6 +1530,7 @@ function hasContent(p){
   if(p.type==='dor') return !!p.dor;
   if(p.type==='bv') return !!p.bv;
   if(p.type==='plan') return !!p.plan;
+  if(p.type==='backlog') return Object.keys(p.backlog?.months||{}).length>0;
   if(p.type==='base') return (p.base?.branch?.setups||0)>0;
   return Object.keys(p.months||{}).length>0;
 }
@@ -1540,10 +1568,11 @@ async function onFiles(files){
 function applyPending(pending){
   const roster=JSON.parse(JSON.stringify(state.roster)); roster.codes=roster.codes||{}; roster.termedSeen=roster.termedSeen||{}; roster.show=roster.show||{};
   const touched={}, newBases={}; let newNames=null; const at=new Date().toISOString();
-  const order=['employees','plan','bv','dor','base','cancel','sales','route','open'];
+  const order=['employees','backlog','plan','bv','dor','base','cancel','sales','route','open'];
   for(const p of [...pending].sort((a,b)=>order.indexOf(a.type)-order.indexOf(b.type))){
     Object.assign(roster.codes,p.codes); Object.assign(roster.termedSeen,p.termedSeen);
     if(p.type==='employees'){ roster.employees=p.employees; roster.employeesFile=p.file; roster.employeesAt=at; continue; }
+    if(p.type==='backlog'){ roster.backlog={...p.backlog,file:p.file,at}; continue; }
     if(p.type==='plan'){ roster.plans=roster.plans||{}; roster.plans[p.plan.year]=p.plan; continue; }
     if(p.type==='bv'){ roster.bv=roster.bv||{}; for(const m of p.bv.months) roster.bv[m]={total:p.bv.total,byClass:p.bv.byClass,file:p.file,at}; continue; }
     if(p.type==='dor'){ roster.dor=roster.dor||{}; const key=p.dor.months.length===1?p.dor.months[0]:'ytd'; roster.dor[key]={...p.dor,file:p.file,at}; continue; }
@@ -1561,6 +1590,9 @@ async function saveAll(){
   const st=$('#upStatus'), btn=$('#saveUp'); btn.disabled=true; st.className='status'; st.textContent='Saving…';
   try{
     const groups={}; for(const x of state.pending) (groups[x.branch]||(groups[x.branch]=[])).push(x.p);
+    // a new backlog snapshot replaces every branch's backlog, even branches with nothing pending
+    const blFile=state.pending.find(x=>x.p.type==='backlog');
+    if(blFile&&CFG) for(const b of CFG.branches) if(!groups[b.code]?.some(p=>p.type==='backlog')) (groups[b.code]||(groups[b.code]=[])).push({type:'backlog',file:blFile.p.file,backlog:{months:{},asOf:blFile.p.backlog.asOf},codes:{},termedSeen:{}});
     const viewing=state.cur||ME.code; let viewTouched=null;
     for(const [code,list] of Object.entries(groups)){
       if(code!==state.cur){ stash(); activate(code); }
