@@ -1108,6 +1108,7 @@ const SERIES={
   sales:d=>d?.salesClass?Object.values(d.salesClass).reduce((a,v)=>a+(v.total||0),0):d?.sales?Object.values(d.sales).reduce((a,v)=>a+(v.recVal||0)+(v.otRev||0)+(v.ex||0),0):null,
   started:d=>d?.sales?Object.values(d.sales).reduce((a,v)=>a+(v.recVal||0),0):null,
   cancels:d=>d?.cancel?Object.values(d.cancel).reduce((a,v)=>a+(v.prod||0),0):null,
+  revenue:d=>d?.revenue?d.revenue.total:d?.route&&Object.values(d.route).some(v=>v.doneAmt!=null)?Object.values(d.route).reduce((a,v)=>a+(v.doneAmt||0),0):null,
   startedN:d=>d?.sales?Object.values(d.sales).reduce((a,v)=>a+(v.rec||0),0):null,   // recurring setups started (count)
   cancelN:d=>d?.cancel?Object.values(d.cancel).reduce((a,v)=>a+(v.n||0),0):null,      // setups cancelled (count)
 };
@@ -1215,12 +1216,28 @@ function yearSum(metric,y){ let t=0,any=false; for(let k=1;k<=12;k++){ const v=s
 function bvYearEnd(y){ // Dec 31 of year y ≈ BV at the start of December + December's net gain
   const dec=state.roster.bv?.[`${y}-12`]; if(!dec) return null;
   const st=seriesVal('started',`${y}-12`)||0, cc=seriesVal('cancels',`${y}-12`)||0; return dec.total.annual+st-cc; }
+// Revenue growth: projected FY vs last FY when last year is complete; otherwise the same closed months in both years
+function revenueGrowth(month){
+  const y=+month.slice(0,4), prevMonths=[], both=[];
+  for(let k=1;k<=12;k++){ const pm=`${y-1}-${pad(k)}`, v=seriesVal('revenue',pm); if(v!=null) prevMonths.push(k);
+    const cm=`${y}-${pad(k)}`; if(v!=null&&cm<month&&seriesVal('revenue',cm)!=null) both.push(k); }
+  if(prevMonths.length===12){
+    const prev=yearSum('revenue',y-1), cur=seriesVal('revenue',month);
+    const eom=cur!=null?trendEOM('revenue',month,cur,monthElapsed(month,state.months[month]?.sources?.route?.asOf)):null;
+    const fy=trendEOY('revenue',month,eom).total;
+    return prev&&fy?{pct:(fy/prev-1)*100,now:fy,prev,label:'FY'}:null;
+  }
+  if(both.length){ const cur=both.reduce((a,k)=>a+seriesVal('revenue',`${y}-${pad(k)}`),0), prev=both.reduce((a,k)=>a+seriesVal('revenue',`${y-1}-${pad(k)}`),0);
+    const span=`${monthName(`${y}-${pad(both[0])}`,true)}–${monthName(`${y}-${pad(both[both.length-1])}`,true)}`;
+    return prev?{pct:(cur/prev-1)*100,now:cur,prev,label:span,note:`${span} vs same months last year`}:null; }
+  return null;
+}
 function growthFor(month,k){
   const y=+month.slice(0,4), g={};
   const last=yearSum('sales',y-1); g.sales=k.eoy?.sales!=null&&last?{pct:(k.eoy.sales/last-1)*100,now:k.eoy.sales,prev:last}:null;
   const prevBV=bvYearEnd(y-1), haveBVnow=!!state.roster.bv?.[month];
   g.bv=haveBVnow&&k.eoy?.bv!=null&&prevBV?{pct:(k.eoy.bv/prevBV-1)*100,now:k.eoy.bv,prev:prevBV}:null;
-  g.revenue=null; // no revenue history in the uploaded reports yet
+  g.revenue=revenueGrowth(month);
   return g;
 }
 function districtTotals(rows,month){
@@ -1246,7 +1263,9 @@ function districtTotals(rows,month){
   // sales: like for like, only branches that also had sales last year (a new acquisition would inflate growth)
   const same=rows.filter(r=>r.growth?.sales), newer=rows.filter(r=>r.eoy?.sales!=null&&!r.growth?.sales).map(r=>r.code);
   const lastSales=same.reduce((a,r)=>a+r.growth.sales.prev,0), nowSales=same.reduce((a,r)=>a+r.growth.sales.now,0);
-  T.growth={sales:lastSales?{pct:(nowSales/lastSales-1)*100,now:nowSales,prev:lastSales,note:newer.length?`same branches; ${newer.join(', ')} not included (no sales last year)`:''}:null,revenue:null,newer};
+  const rv=rows.filter(r=>r.growth?.revenue);
+  const revNow=rv.reduce((a,r)=>a+r.growth.revenue.now,0), revPrev=rv.reduce((a,r)=>a+r.growth.revenue.prev,0);
+  T.growth={sales:lastSales?{pct:(nowSales/lastSales-1)*100,now:nowSales,prev:lastSales,note:newer.length?`same branches; ${newer.join(', ')} not included (no sales last year)`:''}:null,revenue:revPrev?{pct:(revNow/revPrev-1)*100,now:revNow,prev:revPrev,note:[rv[0]?.growth.revenue.note,rv.length<rows.length?`${rows.filter(r=>!r.growth?.revenue).map(r=>r.code).join(', ')} not included`:''].filter(Boolean).join('; ')}:null,newer};
   const prevBV=(()=>{ const dec=state.roster.bv?.[`${+month.slice(0,4)-1}-12`]; if(!dec) return null;
     const ym=`${+month.slice(0,4)-1}-12`; let st=0,cc=0; for(const b of CFG.branches){ const d=state.boards[b.code]?.months?.[ym]; st+=SERIES.started(d)||0; cc+=SERIES.cancels(d)||0; } return dec.total.annual+st-cc; })();
   T.growth.bv=dbv&&T.eoy?.bv!=null&&prevBV?{pct:(T.eoy.bv/prevBV-1)*100,now:T.eoy.bv,prev:prevBV,note:newer.length?`includes ${newer.join(', ')}, added this year`:''}:null;
@@ -1288,9 +1307,9 @@ function growthTile(g,month,small){
   const y=+month.slice(0,4);
   const rows=[['Sales',g?.sales,'FY sales: projected year end vs. last year'],['Business valuation',g?.bv,'Dec 31 BV: projected vs. last year'],['Revenue',g?.revenue,'needs revenue history']];
   const scale=Math.max(10,...rows.map(r=>r[1]?Math.abs(r[1].pct):0));
-  const bar=([l,v,why])=>{ if(!v) return `<span class="gr"><span class="grl">${l}</span><span class="grt na"></span><span class="grv na">${l==='Revenue'?'no revenue history yet':l==='Business valuation'?'needs BV for Dec '+(y-1)+' and this month':'no data'}</span></span>`;
+  const bar=([l,v,why])=>{ if(!v) return `<span class="gr"><span class="grl">${l}</span><span class="grt na"></span><span class="grv na">${l==='Revenue'?'needs revenue for the same months in both years':l==='Business valuation'?(state.roster.bv?.[`${y-1}-12`]?'needs this month’s BV for this branch':'needs BV for Dec '+(y-1)+' and this month'):'no data'}</span></span>`;
     const w=Math.min(Math.abs(v.pct)/scale,1)*50, pos=v.pct>=0;
-    return `<span class="gr"><span class="grl">${l}</span><span class="grt"><span class="grc"></span><span class="grf ${pos?'up':'down'}" style="${pos?'left:50%':`left:${50-w}%`};width:${w}%"></span></span><span class="grv ${pos?'up':'down'}"><b>${v.pct>=0?'+':''}${v.pct.toFixed(1)}%</b>${small?'':` · ${money(v.now)} vs ${money(v.prev)}${v.note?` <span class="grn">(${esc(v.note)})</span>`:''}`}</span></span>`; };
+    return `<span class="gr"><span class="grl">${l}</span><span class="grt"><span class="grc"></span><span class="grf ${pos?'up':'down'}" style="${pos?'left:50%':`left:${50-w}%`};width:${w}%"></span></span><span class="grv ${pos?'up':'down'}"><b>${v.pct>=0?'+':''}${v.pct.toFixed(1)}%</b>${small?(v.label&&v.label!=='FY'?` <span class="grn">${esc(v.label)}</span>`:''):` · ${money(v.now)} vs ${money(v.prev)}${v.note?` <span class="grn">(${esc(v.note)})</span>`:''}`}</span></span>`; };
   return `<div class="${small?'mt':'kpi'} growth"><span class="l">Growth · FY${String(y).slice(2)} vs FY${String(y-1).slice(2)}</span>${rows.map(bar).join('')}</div>`;
 }
 const trendBadge=ok=>`<span class="pb ${ok?'ok':'no'}">${ok?'ON TRACK':'OFF TRACK'}</span>`;
@@ -1395,6 +1414,7 @@ function detect(rows){
     if(has('Service Class')&&has('Beginning Annual BV')) return {type:'bv',hi:i,h};
     if(has('Started Recurring Sales')&&has('Net Gain')) return {type:'netgain',hi:i,h};
     if(has('Bucket')&&has('Work Date')&&has('Total Sales')) return {type:'backlog',hi:i,h};
+    if(has('Period')&&has('SubTotal')&&has('Branch')&&!has('Status')) return {type:'revenue',hi:i,h};
     if(has('Status')&&has('Technician Name')&&has('Work Date')) return {type:'route',hi:i,h};
     if(has('Tech 1')&&has('Work Date')) return {type:'open',hi:i,h};
   }
@@ -1409,6 +1429,23 @@ function parseReport(file,wb){
     const objs=objects(rows,d.hi,d.h).filter(inBranch);
     const out={type:d.type,file:file.name,months:{},codes:{},termedSeen:{}};
     const seen=n=>{ if(n?.termed) out.termedSeen[n.key]=n.termed; };
+    if(d.type==='revenue'){
+      // Revenue (invoiced SubTotal) by month. Row-level detail or a Branch × Period summary both work.
+      const truncated=rows.some(r=>r.some(c=>/exceeded the allowed volume/i.test(String(c))));
+      const months={}; const cnt={};
+      for(const o of objs){ const per=String(o['Period']??'').replace(/\.0$/,'').trim(); const mm=per.match(/^(\d{4})(\d{2})$/); if(!mm) continue;
+        const m=`${mm[1]}-${mm[2]}`, v=num(o['SubTotal'])||0; (months[m]||(months[m]={total:0,n:0})); months[m].total+=v; months[m].n++; }
+      let keep=Object.keys(months).sort(), dropped=[];
+      if(truncated&&keep.length){
+        // Power BI cut the export off: months at the end have only a sliver of rows, and the month before them may be partial too
+        const med=[...keep.map(m=>months[m].n)].sort((a,b)=>a-b)[Math.floor(keep.length/2)];
+        let last=keep.length-1; while(last>=0&&months[keep[last]].n<med*0.2) last--;
+        dropped=keep.slice(last); keep=keep.slice(0,last);
+      }
+      out.months={}; for(const m of keep) out.months[m]=months[m];
+      out.summary=keep.length?`Revenue ${money(keep.reduce((a,m)=>a+months[m].total,0))} for ${monthName(keep[0],true)} ${keep[0].slice(0,4)} – ${monthName(keep[keep.length-1],true)} ${keep[keep.length-1].slice(0,4)}.${truncated?` Power BI cut this export off at its row limit, so ${dropped.map(m=>monthName(m,true)+' '+m.slice(0,4)).join(', ')} were left out. Export the rest in smaller date ranges, or as a Branch × Period summary.`:''}`:'No complete months in this export.';
+      return out;
+    }
     if(d.type==='backlog'){
       // Backlog: sales written but not completed yet, by work date. A snapshot: each upload replaces the last one.
       const months={}; let n=0, latest='';
@@ -1551,7 +1588,7 @@ function parseReport(file,wb){
         else if(reason==='ACQ'){ t.acq++; } // acquisition voids: left out of void counts, like the company report
         else if((reason&&reason!=='N/A')||st.startsWith('void')){ const r=reason&&reason!=='N/A'?reason:'NO REASON'; t.voided++; t.voidAmt+=sub; t.reasons[r]=(t.reasons[r]||0)+1; vd++;
           (out.voidList[m]||(out.voidList[m]=[])).push({l:idStr(o['Location Code']),k:nm.key,r,s:String(o['Service Code']??'').trim().toUpperCase(),d:ymd(dt),a:Math.round(sub*100)/100}); }
-        else if(st.startsWith('complet')){ t.done++; done++; const ds=ymd(dt); if(ds.slice(0,7)===m&&(!out.asOf[m]||ds>out.asOf[m])) out.asOf[m]=ds; }
+        else if(st.startsWith('complet')){ t.done++; t.doneAmt=(t.doneAmt||0)+sub; done++; const ds=ymd(dt); if(ds.slice(0,7)===m&&(!out.asOf[m]||ds>out.asOf[m])) out.asOf[m]=ds; }
         else t.open++; }
       out.summary=`${done.toLocaleString()} completed, ${vd} voided and ${cvN} voided because the customer cancelled, in ${Object.keys(out.months).map(m=>monthName(m)).join(', ')}. ${nsN} not-started sales removed${dup?`; ${dup} repeated orders removed`:''}.`;
     }
@@ -1571,7 +1608,7 @@ function parseReport(file,wb){
 
 /* ---------- upload ---------- */
 function openUpload(){ state.pending=[]; $('#upFile').value=''; $('#fileList').innerHTML=''; $('#upStatus').textContent=''; $('#saveUp').disabled=true; $('#upDlg').showModal(); }
-const TYPE_LBL={backlog:'Sales backlog',plan:'FY budget plan',bv:'Business valuation',dor:'DOR sales budget',base:'Customer list',cancel:'Cancel detail',sales:'Sales details',route:'Route completion details',open:'Open orders',employees:'Employment list'};
+const TYPE_LBL={revenue:'Revenue history',backlog:'Sales backlog',plan:'FY budget plan',bv:'Business valuation',dor:'DOR sales budget',base:'Customer list',cancel:'Cancel detail',sales:'Sales details',route:'Route completion details',open:'Open orders',employees:'Employment list'};
 // Power BI exports carry an "Applied filters" note: which branches and months the numbers cover
 function noteBranches(note){ const m=note.match(/Branch(?:Name)?\s+is\s+([^\n]+)/i); return m?m[1].split(/,|\bor\b/i).map(x=>x.trim().toUpperCase()).filter(x=>/^[A-Z]{2,4}$/.test(x)):[]; }
 function noteMonths(note){
