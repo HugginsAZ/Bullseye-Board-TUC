@@ -315,3 +315,8 @@ h3.dh{margin:18px 0 0;font-size:1.15rem;color:var(--muted)}
 .kpi{min-width:0;overflow-wrap:anywhere}
 .kpi .s{overflow-wrap:anywhere}
 @media (max-width:640px){ .gbv{white-space:normal} .gbv .pend{display:inline-block} }
+.kbar{position:relative;display:block;height:8px;border-radius:4px;background:#E9E2D4;margin:4px 0 2px;overflow:hidden}
+.kbf{position:absolute;inset:0 auto 0 0;background:#2F7D3A;border-radius:4px}
+.kbp{position:absolute;top:0;bottom:0;border:1.5px dashed #2F7D3A;border-left:none;border-radius:0 4px 4px 0;background:repeating-linear-gradient(135deg,transparent 0 3px,rgba(47,125,58,.28) 3px 6px)}
+.kpi.off .kbf{background:#C8372D} .kpi.off .kbp{border-color:#C8372D;background:repeating-linear-gradient(135deg,transparent 0 3px,rgba(200,55,45,.25) 3px 6px)}
+.mt.off .kbf{background:#C8372D} .mt.off .kbp{border-color:#C8372D;background:repeating-linear-gradient(135deg,transparent 0 3px,rgba(200,55,45,.25) 3px 6px)}
