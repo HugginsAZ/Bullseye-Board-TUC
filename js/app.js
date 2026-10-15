@@ -552,7 +552,7 @@ function billRoute(R,ytd){
 }
 function kpiStrip(tiles,sec){
   if(!tiles.length) return '';
-  return `<div class="kpis">${tiles.map(([l,v,sub,badge,list,cls])=>`<button type="button" class="kpi ${cls||(badge&&badge.includes('pb no')?'off':badge?'onp':'')}" ${list?`data-list="${list}" data-who="branch"`:`data-branch="${sec}"`}><span class="l">${esc(l)}</span><span class="v">${v}</span>${badge||''}<span class="s">${sub||''}</span></button>`).join('')}</div>`;
+  return `<div class="kpis">${tiles.map(([l,v,sub,badge,list,cls,bar])=>`<button type="button" class="kpi ${cls||(badge&&badge.includes('pb no')?'off':badge?'onp':'')}" ${list?`data-list="${list}" data-who="branch"`:`data-branch="${sec}"`}><span class="l">${esc(l)}</span><span class="v">${v}</span>${bar||''}${badge||''}<span class="s">${sub||''}</span></button>`).join('')}</div>`;
 }
 const VOID_LBL={CANCELED:'Customer cancelled',REFUSE:'Customer refused',"NO PAY":'Non-payment',MISSED:'Missed',"NOT HOME":'Not home',ANIMALS:'Animals on site',"ADMN ERROR":'Admin error',ACQ:'Acquisition','NO REASON':'No reason given'};
 function rowsTable(head,rows){ return `<div class="tbl"><table><thead><tr>${head.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${r.map(c=>`<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`; }
@@ -774,6 +774,13 @@ function computeSales(month,mode){
       for(const f of ['rec','recVal','ot','otRev','ex']) bm[f]+=v[f]||0;
     }
   }
+  // Backlog (sold, not completed yet) for the month under way is counted in each salesperson's totals.
+  // t.pend keeps the pending part so bars can draw it dashed.
+  if(mode==='month'){ const bl=backlogFor(month);
+    if(bl) for(const [k,v] of Object.entries(bl.bySp||{})){ const r=resolveKey(k), st=salesStatus(r);
+      const t=P[r.id]||(P[r.id]=sblank(r.id,r.display,st,r.emp)), bm=t.byM[month]||(t.byM[month]={rec:0,recVal:0,ot:0,otRev:0,ex:0});
+      t.pend=t.pend||{total:0,rec:0,ot:0}; t.pend.total+=v.total; t.pend.rec+=v.rec; t.pend.ot+=v.ot;
+      t.recVal+=v.rec; t.otRev+=v.ot; bm.recVal+=v.rec; bm.otRev+=v.ot; } }
   // Sale quality (chargebacks): first-year cancels on each salesperson's accounts. Used only in the sales score;
   // cancellations are never subtracted from captured sales dollars.
   let hasQ=false;
@@ -796,11 +803,14 @@ function computeSales(month,mode){
     // Overall = recurring annual value + one-time sales; in a month still under way, projected to month end at the current pace
     t.otAll=(t.otRev||0)+(t.ex||0); // one-time + excess initial, as the DOR groups them
     t.overall=(t.recVal||0)+t.otAll;
-    t.proj=mode==='month'&&exp>0&&exp<1?t.overall/exp:t.overall;
+    // projection: completed sales at the current pace, but never less than completed + backlog already in hand
+    const done=t.overall-(t.pend?.total||0);
+    t.proj=mode==='month'&&exp>0&&exp<1?Math.max(done/exp,t.overall):t.overall;
   };
   const all=Object.values(P); all.forEach(derive);
   const B=sblank('branch','Branch total','branch',null);
   for(const t of all) for(const f of ['rec','recVal','recTotal','ot','otRev','ex','early','spc']) B[f]+=t[f];
+  B.pend={total:0,rec:0,ot:0}; for(const t of all) if(t.pend) for(const f of ['total','rec','ot']) B.pend[f]+=t.pend[f];
   B.otAll=B.otRev+B.ex;
   // Sales score (100): 40 total dollars vs budget, 25 recurring vs budget, 20 one-time & initial vs budget (all against pace), 15 sale quality
   const branchEarly=B.rec?B.early/B.rec:0, ep=Math.max(exp,0.01);
@@ -819,9 +829,10 @@ function computeSales(month,mode){
   B.recAmt=B.recVal;
   B.recGoal=all.reduce((a,t)=>a+(t.recGoal||0),0)||null; B.otGoal=all.reduce((a,t)=>a+(t.otGoal||0),0)||null;
   B.gRec=all.reduce((a,t)=>a+(t.recGoal?t.recCap:0),0); B.gOt=all.reduce((a,t)=>a+(t.otGoal?t.otCap:0),0);
+  B.gPend=all.reduce((a,t)=>a+(t.budget&&t.pend?t.pend.total:0),0);
   B.recPct=B.recGoal?B.gRec/B.recGoal*100:null; B.otPct=B.otGoal?B.gOt/B.otGoal*100:null;
   B.budget=(B.recGoal||0)+(B.otGoal||0)||null; B.captured=B.gRec+B.gOt; B.goalPct=B.budget?B.captured/B.budget*100:null;
-  B.overall=B.recVal+B.otAll; B.proj=mode==='month'&&exp>0&&exp<1?B.overall/exp:B.overall;
+  B.overall=B.recVal+B.otAll; B.proj=mode==='month'&&exp>0&&exp<1?Math.max((B.overall-B.pend.total)/exp,B.overall):B.overall;
   const cancels=null; // cancellations belong to the route views, not sales
   const by=s=>all.filter(t=>t.status===s);
   return {board:by('board'),termed:by('termed'),outside:by('outside'),staff:by('staff'),main:by('main'),other:by('other'),B,exp,n:gm.length,budMonths,unit:'value',stale,cancels,hasGoals:budMonths.length>0,dor:dorCompare(month,mode)};
@@ -831,12 +842,14 @@ function backlogFor(month){ const b=state.roster.backlog; if(!b||month!==curYM()
 function backlogLater(month){ const b=state.roster.backlog; if(!b) return 0; return Object.entries(b.months||{}).filter(([m])=>m>month&&m.slice(0,4)===month.slice(0,4)).reduce((a,[,v])=>a+v.total,0); }
 function backlogBySp(month){ const bl=backlogFor(month), out={}; if(!bl) return out; for(const [k,v] of Object.entries(bl.bySp||{})){ const id=resolveKey(k).id, o=out[id]||(out[id]={total:0,rec:0,ot:0,n:0}); for(const f of ['total','rec','ot','n']) o[f]+=v[f]; } return out; }
 const MAYBE='<span class="pb maybe">PENDING</span>';
-function dorTile(D){
+function dorTile(D,pend){
   if(D&&D.missing) return [['Branch vs. budget','—',D.missing==='month'?`upload ${monthName(D.month,true)}’s DOR budget (filtered to that month) to track it`:`upload ${monthName(D.month,true)}’s DOR budget so it can be taken out of year to date`]];
   if(!D||D.pct==null) return [];
+  pend=pend>0?pend:0;
   const span=D.months.length===1?monthName(D.months[0],true):`${monthName(D.months[0],true)}–${monthName(D.months[D.months.length-1],true)}`;
-  const ok=D.pct>=D.exp*100, done=D.exp>=1;
-  return [['Branch vs. budget',pct1(D.pct),`${money(D.cap.total)} of ${money(D.budget)} · ${span}`,`<span class="pb ${ok?'ok':'no'}">${done?(D.pct>=100?'BUDGET MET':'BUDGET MISSED'):(ok?'ON PACE':'OFF PACE')}</span>`]];
+  const tot=D.cap.total+pend, pctT=D.budget?tot/D.budget*100:D.pct;
+  const ok=pctT>=D.exp*100, done=D.exp>=1;
+  return [['Branch vs. budget',pct1(pctT),`${money(tot)} of ${money(D.budget)} · ${span}${pend?` · <span class="pend">incl. ${money(pend)} pending</span>`:''}`,`<span class="pb ${ok?'ok':'no'}">${done?(pctT>=100?'BUDGET MET':'BUDGET MISSED'):(ok?'ON PACE':'OFF PACE')}</span>`,null,null,pend?miniBar(D.cap.total/D.budget*100,pend/D.budget*100):'']];
 }
 function dorHTML(D){
   if(!D) return '';
@@ -852,17 +865,21 @@ function dorHTML(D){
     ${D.needsResync?'<p class="sub" style="color:var(--low)">Re-upload the Sales Details export so excess initial and service-class totals are included for every month.</p>':''}`;
 }
 function goalBand(pct,exp){ if(pct==null) return 'c-none'; const r=exp>0?pct/(exp*100):1; return r>=1?'c-good':r>=0.8?'c-mid':'c-low'; }
+// amt already includes any pending backlog; pend is drawn as the dashed part at the end of the bar
 function goalBar(label,amt,goal,pctV,exp,isMoney,pend){
+  pend=pend>0?Math.min(pend,amt):0;
   const a=isMoney?money(amt):Math.round(amt).toLocaleString();
-  const pTxt=pend>0?` <span class="pend">+ ${money(pend)} pending</span>`:'';
+  const pTxt=pend>0?` <span class="pend">incl. ${money(pend)} pending</span>`:'';
   if(goal==null) return `<span class="gb c-none"><span class="gbl">${label}</span><span class="gbt"></span><span class="gbv">${a} · no budget${pTxt}</span></span>`;
   const g=isMoney?money(goal):Math.round(goal).toLocaleString();
-  const solid=Math.min(pctV,100), dash=pend>0?Math.min(pend/goal*100,100-solid):0;
-  return `<span class="gb ${goalBand(pctV,exp)}"><span class="gbl">${label}</span><span class="gbt"><span class="gbf" style="width:${solid}%"></span>${dash>0?`<span class="gbp" style="left:${solid}%;width:${dash}%" title="Backlog: sold but not completed yet. It may still cancel or move to next month."></span>`:''}${exp<1?`<span class="gbx" style="left:${exp*100}%"></span>`:''}</span><span class="gbv"><b>${pct(pctV)}</b> · ${a} of ${g} budget${pTxt}</span></span>`;
+  const total=Math.min(pctV,100), dash=pend>0?Math.min(pend/goal*100,total):0, solid=total-dash;
+  return `<span class="gb ${goalBand(pctV,exp)}"><span class="gbl">${label}</span><span class="gbt"><span class="gbf" style="width:${solid}%"></span>${dash>0?`<span class="gbp" style="left:${solid}%;width:${dash}%" title="Pending backlog: sold but not completed yet. It may still cancel or move to next month."></span>`:''}${exp<1?`<span class="gbx" style="left:${exp*100}%"></span>`:''}</span><span class="gbv"><b>${pct(pctV)}</b> · ${a} of ${g} budget${pTxt}</span></span>`;
 }
+// small solid + dashed bar for a tile (completed vs pending share of a target)
+function miniBar(solidPct,dashPct){ const s1=Math.max(0,Math.min(solidPct,100)), d1=Math.max(0,Math.min(dashPct,100-s1)); return `<span class="kbar"><span class="kbf" style="width:${s1}%"></span>${d1>0?`<span class="kbp" style="left:${s1}%;width:${d1}%"></span>`:''}</span>`; }
 function renderSales(c){
   const S=computeSales(state.month,state.mode);
-  const BL=state.mode==='month'?backlogFor(state.month):null, BLsp=state.mode==='month'?backlogBySp(state.month):{};
+  const BL=state.mode==='month'?backlogFor(state.month):null;
   const goalsBtn=state.canEdit===false?'':`<button type="button" class="ghost admin" id="goalsBtn">Sales budgets</button>`;
   if(!S){ c.innerHTML=`<div class="empty"><h2>No sales details for ${esc(periodLabel())}</h2><p>Upload the sales details export covering this period.</p>${state.canEdit===false?'':'<button class="btn" type="button" id="emptyUp">Upload reports</button>'}</div>${sourcesBlock()}`; return; }
   const B=S.B, isVal=S.unit!=='accounts';
@@ -884,11 +901,10 @@ function renderSales(c){
   c.innerHTML=`
     ${S.stale?'<p class="banner" style="border-radius:8px">Some months were uploaded before sales were credited to salespeople. Re-upload the sales details export to fix them.</p>':''}
     ${kpiStrip([
-      ...dorTile(S.dor),
-      ...(BL?[['Backlog this month',money(BL.total),`${BL.n} sold, not completed yet (${money(BL.rec)} recurring, ${money(BL.ot)} one-time & initial) · could back out or slip to next month · as of ${new Date(BL.asOf+'T12:00').toLocaleDateString(undefined,{month:'short',day:'numeric'})}`,MAYBE,null,'maybe']]:[]),
-      ...(S.hasGoals?[['Salespeople vs. budget',B.goalPct!=null?pct1(B.goalPct):'—',`${money(B.captured)} of ${money(B.budget)} budgeted`,B.goalPct!=null?`<span class="pb ${B.goalPct>=S.exp*100?'ok':'no'}">${S.exp>=1?(B.goalPct>=100?'BUDGET MET':'BUDGET MISSED'):(B.goalPct>=S.exp*100?'ON PACE':'OFF PACE')}</span>`:'']]:[]),
-      ['Recurring sold',money(B.recVal),`${B.rec} setups${B.recPct!=null?` · ${pct1(B.recPct)} of budget`:''}`],
-      ['One-time & initial',money(B.otAll),`${B.ot} jobs + initial${B.otPct!=null?` · ${pct1(B.otPct)} of budget`:''}`],
+      ...dorTile(S.dor,BL?.total),
+      ...(S.hasGoals?[['Salespeople vs. budget',B.goalPct!=null?pct1(B.goalPct):'—',`${money(B.captured)} of ${money(B.budget)} budgeted${B.gPend?` · <span class="pend">incl. ${money(B.gPend)} pending</span>`:''}`,B.goalPct!=null?`<span class="pb ${B.goalPct>=S.exp*100?'ok':'no'}">${S.exp>=1?(B.goalPct>=100?'BUDGET MET':'BUDGET MISSED'):(B.goalPct>=S.exp*100?'ON PACE':'OFF PACE')}</span>`:'']]:[]),
+      ['Recurring sold',money(B.recVal),`${B.rec} setups${B.recPct!=null?` · ${pct1(B.recPct)} of budget`:''}${B.pend.rec?` · <span class="pend">incl. ${money(B.pend.rec)} pending</span>`:''}`,'',null,null,B.pend.rec?miniBar((B.recVal-B.pend.rec)/B.recVal*100,B.pend.rec/B.recVal*100):''],
+      ['One-time & initial',money(B.otAll),`${B.ot} jobs + initial${B.otPct!=null?` · ${pct1(B.otPct)} of budget`:''}${B.pend.ot?` · <span class="pend">incl. ${money(B.pend.ot)} pending</span>`:''}`,'',null,null,B.pend.ot?miniBar((B.otAll-B.pend.ot)/B.otAll*100,B.pend.ot/B.otAll*100):''],
       ...(S.cancels!=null?[['Net setups',fmt('netGain',B.rec-S.cancels),`${B.rec} added · ${S.cancels} cancelled`]]:[])],'sales')}
     ${S.hasGoals&&B.goalPct!=null?bill(B.goalPct>=S.exp*100?`The sales team has captured ${pct1(B.goalPct)} of budget, right where it should be by now. Keep stacking setups.`:`The sales team has captured ${pct1(B.goalPct)} of budget; about ${pct1(S.exp*100)} would be on pace by today.`):''}
     <p class="periodline">${esc(periodLabel())} · credit goes to the salesperson on each sale${S.exp<1?' · the black mark on each bar is where they should be today':''}</p>
@@ -903,9 +919,9 @@ function renderSales(c){
       const big=sk==='score'?(t.score??'—'):fmt(sk,t[sk]);
       return `<li><button type="button" class="lane ${goalBand(t.goalPct,S.exp)}" data-sp="${esc(t.id)}">
         <span class="rank">${t[sk]==null?'–':i+1}</span>
-        <span class="who"><span class="name">${esc(t.display)}</span><span class="chips">${t.goalPct!=null?`<span>${S.exp>=1?`<span class="pb ${t.goalPct>=100?'ok':'no'}">${t.goalPct>=100?'BUDGET MET':'BUDGET MISSED'}</span>`:`<span class="pb ${t.goalPct>=S.exp*100?'ok':'no'}">${t.goalPct>=S.exp*100?'ON PACE':'OFF PACE'}</span>`}</span>`:''}${sk==='proj'&&projecting?`<span><b>${money(t.overall)}</b> so far</span>`:''}${sk!=='score'&&t.score!=null?`<span>score <b>${t.score}</b></span>`:''}<span><b>${t.rec}</b> recurring</span><span><b>${money(t.recVal)}</b>/yr</span><span><b>${t.ot}</b> one-time</span>${t.earlyRate!=null?`<span><b>${t.early}</b> first-year cancels</span>`:''}</span></span>
+        <span class="who"><span class="name">${esc(t.display)}</span><span class="chips">${t.goalPct!=null?`<span>${S.exp>=1?`<span class="pb ${t.goalPct>=100?'ok':'no'}">${t.goalPct>=100?'BUDGET MET':'BUDGET MISSED'}</span>`:`<span class="pb ${t.goalPct>=S.exp*100?'ok':'no'}">${t.goalPct>=S.exp*100?'ON PACE':'OFF PACE'}</span>`}</span>`:''}${sk==='proj'&&projecting?`<span><b>${money(t.overall)}</b> so far${t.pend?` <span class="pend">(incl. ${money(t.pend.total)} pending)</span>`:''}</span>`:''}${sk!=='score'&&t.score!=null?`<span>score <b>${t.score}</b></span>`:''}<span><b>${t.rec}</b> recurring</span><span><b>${money(t.recVal)}</b>/yr</span><span><b>${t.ot}</b> one-time</span>${t.earlyRate!=null?`<span><b>${t.early}</b> first-year cancels</span>`:''}</span></span>
         <span class="score"><span class="num">${big}</span></span>
-        <span class="goals">${goalBar('Total',t.budget?t.captured:t.overall,t.budget,t.goalPct,S.exp,true,BLsp[t.id]?.total)}${goalBar('Recurring',t.recGoal?t.recCap:t.recAmt,t.recGoal,t.recPct,S.exp,true,BLsp[t.id]?.rec)}${goalBar('One-time & initial',t.otGoal?t.otCap:t.otAll,t.otGoal,t.otPct,S.exp,true,BLsp[t.id]?.ot)}</span></button></li>`;
+        <span class="goals">${goalBar('Total',t.budget?t.captured:t.overall,t.budget,t.goalPct,S.exp,true,t.pend?.total)}${goalBar('Recurring',t.recGoal?t.recCap:t.recAmt,t.recGoal,t.recPct,S.exp,true,t.pend?.rec)}${goalBar('One-time & initial',t.otGoal?t.otCap:t.otAll,t.otGoal,t.otPct,S.exp,true,t.pend?.ot)}</span></button></li>`;
     }).join('')}</ol>${sourcesBlock()}`;
   c.querySelectorAll('[data-sort]').forEach(b=>b.onclick=()=>{state.sort.sales=b.dataset.sort;render();});
 }
@@ -1153,7 +1169,10 @@ function branchKpis(b,month){
   const B=R.B, el=R.el||0; out.el=el; out.asOf=R.asOf; out.final=el>=1;
   const D=dorCompare(month,'month'), S=computeSales(month,'month');
   const sNow=seriesVal('sales',month), sShare=D&&!D.missing?D.exp:(S?S.exp:el);
-  if(sNow!=null){ const proj=trendEOM('sales',month,sNow,sShare); out.sales={now:sNow,proj,budget:D&&!D.missing?D.budget:null,share:sShare,hist:trendExpected('sales',month)!=null,backlog:backlogFor(month)?.total||0}; }
+  if(sNow!=null){ const pend=backlogFor(month)?.total||0;
+    // backlog is counted in: the month ends at no less than completed + pending, and the trend covers the rest
+    const proj=Math.max(trendEOM('sales',month,sNow,sShare),sNow+pend);
+    out.sales={now:sNow+pend,done:sNow,proj,budget:D&&!D.missing?D.budget:null,share:sShare,hist:trendExpected('sales',month)!=null,backlog:pend}; }
   if(B.stops&&B.completed!=null){
     // Voided orders stay in total stops but can never be completed, so the most a branch can reach is stops − projected voids
     const projVoids=Math.min(B.stops,toEOM(B.voidN||0,el)), ceiling=B.stops-projVoids;
@@ -1173,7 +1192,10 @@ function branchKpis(b,month){
   // Year end against the FY budget plan
   if(out.sales){
     const e=trendEOY('sales',month,out.sales.proj), fy=state.roster.plans?.[month.slice(0,4)]?.budget?.[b.code];
-    out.eoy={sales:e.total,method:e.method,budget:fy?Object.values(fy).reduce((a,x)=>a+x.total,0):null,backlogLater:backlogLater(month)};
+    // later months: never less than the backlog already scheduled for them
+    let extra=0; const blm=state.roster.backlog?.months||{};
+    for(const [x,v] of Object.entries(blm)) if(x>month&&x.slice(0,4)===month.slice(0,4)){ const exp=expectOrPace('sales',x,month)||0; if(v.total>exp) extra+=v.total-exp; }
+    out.eoy={sales:e.total+extra,method:e.method,budget:fy?Object.values(fy).reduce((a,x)=>a+x.total,0):null,backlogLater:backlogLater(month)};
   }
   if(out.net&&out.net.stP!=null&&out.net.ccP!=null){
     const st=trendEOY('started',month,out.net.stP), cc=trendEOY('cancels',month,out.net.ccP);
@@ -1193,7 +1215,7 @@ function districtTotals(rows,month){
   if(any(r=>r.sales)){
     const dDor=state.roster.dor?.[month];
     const budAll=rows.every(r=>!r.sales||r.sales.budget!=null);
-    T.sales={now:sum(r=>r.sales?.now),proj:sum(r=>r.sales?.proj),backlog:sum(r=>r.sales?.backlog),budget:dDor?dDor.total.budget:(budAll?sum(r=>r.sales?.budget):null)};
+    T.sales={now:sum(r=>r.sales?.now),done:sum(r=>r.sales?.done),proj:sum(r=>r.sales?.proj),backlog:sum(r=>r.sales?.backlog),budget:dDor?dDor.total.budget:(budAll?sum(r=>r.sales?.budget):null)};
   }
   if(any(r=>r.comp)) T.comp={done:sum(r=>r.comp?.done),projDone:sum(r=>r.comp?.projDone),stops:sum(r=>r.comp?.stops),projVoids:sum(r=>r.comp?.projVoids),ceiling:sum(r=>r.comp?.ceiling)};
   const dol=rows.filter(r=>r.cancel&&r.cancel.basis==='dollars'&&r.cancel.book>0);
@@ -1211,8 +1233,8 @@ function kpiTiles(k){
   const f=k.final, t=[];
   const now=(s)=>`<span class="s">${s}</span>`;
   if(k.sales){ const p=k.sales.budget?k.sales.proj/k.sales.budget*100:null;
-    const bl=!f&&k.sales.backlog>0?k.sales.backlog:0;
-    t.push(['Sales to budget',p!=null?pct1(p):money(k.sales.proj),`${f?'final':'projected'} ${money(k.sales.proj)}${k.sales.budget?` of ${money(k.sales.budget)}`:' · no budget loaded'} · now ${money(k.sales.now)}${bl?` · <span class="pend">+ ${money(bl)} backlog pending${k.sales.budget?` (sold + backlog = ${pct1((k.sales.now+bl)/k.sales.budget*100)} of budget)`:''}</span>`:''}`,p!=null?trackBadge(p>=100,f):'']); }
+    const bl=!f&&k.sales.backlog>0?k.sales.backlog:0, bud=k.sales.budget;
+    t.push(['Sales to budget',p!=null?pct1(p):money(k.sales.proj),`${f?'final':'projected'} ${money(k.sales.proj)}${bud?` of ${money(bud)}`:' · no budget loaded'} · now ${money(k.sales.now)}${bl?` <span class="pend">incl. ${money(bl)} pending</span>`:''}`,p!=null?trackBadge(p>=100,f):'',null,null,bud?miniBar((k.sales.done??k.sales.now)/bud*100,bl/bud*100):'']); }
   else t.push(['Sales to budget','—','no sales data yet','']);
   if(k.comp){ const p=k.comp.stops?k.comp.projDone/k.comp.stops*100:null;
     const cap=k.comp.stops?k.comp.ceiling/k.comp.stops*100:null;
@@ -1232,7 +1254,7 @@ function eoyTiles(k,month){
   const e=k.eoy, y=month.slice(0,4), t=[];
   if(!e) return t;
   if(e.sales!=null){ const p=e.budget?e.sales/e.budget*100:null;
-    t.push([`Sales · FY${y.slice(2)} year end`,p!=null?pct1(p):money(e.sales),`projected ${money(e.sales)}${e.budget?` of ${money(e.budget)} budget`:' · no FY budget'}${e.method==='pace'?' · at this year’s pace (no history)':''}${e.backlogLater>0?` · <span class="pend">+ ${money(e.backlogLater)} backlog scheduled in later months (pending)</span>`:''}`,p!=null?trendBadge(p>=100):'']); }
+    t.push([`Sales · FY${y.slice(2)} year end`,p!=null?pct1(p):money(e.sales),`projected ${money(e.sales)}${e.budget?` of ${money(e.budget)} budget`:' · no FY budget'}${e.method==='pace'?' · at this year’s pace (no history)':''}${e.backlogLater>0?` · <span class="pend">incl. ${money(e.backlogLater)} backlog already scheduled for later months</span>`:''}`,p!=null?trendBadge(p>=100):'']); }
   if(e.net!=null) t.push([`Net gain · FY${y.slice(2)} year end`,fmt('netGainVal',e.net),'projected recurring $ started − $ cancelled for the year',`<span class="pb ${e.net>=0?'ok':'no'}">${e.net>=0?'GAINING':'SHRINKING'}</span>`]);
   if(e.bv!=null) t.push([`Business valuation · Dec 31`,money(e.bv),`projected · ${fmt('netGainVal',e.bv-(k.bv?.proj??e.bv))} after this month`,`<span class="pb ${e.bv>=(k.bv?.start??e.bv)?'ok':'no'}">${e.bv>=(k.bv?.start??e.bv)?'GROWING':'SHRINKING'}</span>`]);
   return t;
@@ -1261,11 +1283,11 @@ function renderDistrict(c){
     ${lines.length?bill(esc(lines.join('; ')+'.'),'Bullseye Bill’s district read'):''}
     <div class="dgrid">${rows.map(r=>`<section class="dcard">
       <header><h2>${esc(r.name)} <span class="sub">${esc(r.code)}</span></h2><a class="more" href="../${esc(r.slug)}/">Open board ›</a></header>
-      ${r.el==null?'<p class="sub">No numbers for this month yet.</p>':`<div class="mtiles">${[...kpiTiles(r),...eoyTiles(r,m)].map(([l,v,sub,badge])=>`<div class="mt ${badge&&badge.includes('pb no')?'off':badge?'onp':''}"><span class="l">${esc(l)}</span><span class="v">${v}</span>${badge||''}<span class="s">${sub}</span></div>`).join('')}</div>`}
+      ${r.el==null?'<p class="sub">No numbers for this month yet.</p>':`<div class="mtiles">${[...kpiTiles(r),...eoyTiles(r,m)].map(([l,v,sub,badge,_l,_c,bar])=>`<div class="mt ${badge&&badge.includes('pb no')?'off':badge?'onp':''}"><span class="l">${esc(l)}</span><span class="v">${v}</span>${bar||''}${badge||''}<span class="s">${sub}</span></div>`).join('')}</div>`}
     </section>`).join('')}</div>
     <details class="foot"><summary>How projections work</summary><div class="srcs sub">
       <span>Month end: what’s in so far, plus the rest of the month at the pace each branch’s last 3 years say to expect for that month (scaled to how this year is running). Early in the month that leans on history; by the last week it’s almost all actual. Workdays follow the company’s working-day counts from the FY budget plan. Route completion and voids use the current pace; voided orders stay in total stops, so projected completion can never pass 100% minus the projected void rate. Closed months show final numbers.</span>
-      <span>Backlog (dashed): sales already written but not completed. It’s shown next to the projections, not added in, because a customer can back out or the work can slip into the next month. Only this month’s work dates count toward the month; later work dates show on the year-end tiles.</span>
+      <span>Backlog: sales already written but not completed, counted in the totals and drawn dashed, because a customer can still back out or the work can slip into next month. This month’s work dates count toward the month (the month can’t project below completed + pending); later work dates set a floor for those months in the year-end projection.</span>
       <span>Year end: actual closed months, plus this month’s projection, plus each remaining month on the same 3-year trend; compared with the FY budget plan. Branches without history use this year’s pace.</span>
       <span>Sales: captured sales from Sales Details vs. the DOR sales budget. Route completion: completed vs. every order on the route completion report. Cancel %: annual $ cancelled ÷ the active book (company Net Gain method). Void %: voided orders ÷ total orders. Net gain: recurring $ started − $ cancelled.</span>
       <span>Business valuation: the BV export’s beginning annual BV (or the customer list’s active annual $ when no BV is loaded), plus projected net gain.</span></div></details>`;
