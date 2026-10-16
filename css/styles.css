@@ -340,3 +340,7 @@ h3.dh{margin:18px 0 0;font-size:1.15rem;color:var(--muted)}
 .kpi .pend,.mt .pend{white-space:normal}
 .gr>*{min-width:0}
 @media (max-width:640px){ .mt.growth .gr,.kpi.growth .gr{grid-template-columns:6rem minmax(0,1fr)} .mt.growth .grv,.kpi.growth .grv{grid-column:1 / -1} }
+.kbr{position:absolute;top:0;bottom:0;background:rgba(47,125,58,.28);border-radius:0 4px 4px 0}
+.kpi.off .kbr,.mt.off .kbr{background:rgba(200,55,45,.25)}
+.gaxis{margin-top:-4px}
+.gax{display:flex;justify-content:space-between;font-size:.7rem;color:#5F665C}
