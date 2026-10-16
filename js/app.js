@@ -875,6 +875,11 @@ function goalBar(label,amt,goal,pctV,exp,isMoney,pend){
   const total=Math.min(pctV,100), dash=pend>0?Math.min(pend/goal*100,total):0, solid=total-dash;
   return `<span class="gb ${goalBand(pctV,exp)}"><span class="gbl">${label}</span><span class="gbt"><span class="gbf" style="width:${solid}%"></span>${dash>0?`<span class="gbp" style="left:${solid}%;width:${dash}%" title="Pending backlog: sold but not completed yet. It may still cancel or move to next month."></span>`:''}${exp<1?`<span class="gbx" style="left:${exp*100}%"></span>`:''}</span><span class="gbv"><b>${pct(pctV)}</b> · ${a} of ${g} budget${pTxt}</span></span>`;
 }
+// tile bar that ends exactly at the projected % of budget: solid = completed, dashed = pending, light = still projected
+function projBar(donePct,pendPct,projPct){
+  const cap=v=>Math.max(0,Math.min(v,100)), end=cap(projPct), d=Math.min(cap(donePct),end), p=Math.min(cap(pendPct),end-d), rest=end-d-p;
+  return `<span class="kbar" title="${pct1(projPct)} of budget projected">${d>0?`<span class="kbf" style="width:${d}%"></span>`:''}${p>0?`<span class="kbp" style="left:${d}%;width:${p}%"></span>`:''}${rest>0?`<span class="kbr" style="left:${d+p}%;width:${rest}%"></span>`:''}</span>`;
+}
 // small solid + dashed bar for a tile (completed vs pending share of a target)
 function miniBar(solidPct,dashPct){ const s1=Math.max(0,Math.min(solidPct,100)), d1=Math.max(0,Math.min(dashPct,100-s1)); return `<span class="kbar"><span class="kbf" style="width:${s1}%"></span>${d1>0?`<span class="kbp" style="left:${s1}%;width:${d1}%"></span>`:''}</span>`; }
 function renderSales(c){
@@ -1197,7 +1202,9 @@ function branchKpis(b,month){
     // later months: never less than the backlog already scheduled for them
     let extra=0; const blm=state.roster.backlog?.months||{};
     for(const [x,v] of Object.entries(blm)) if(x>month&&x.slice(0,4)===month.slice(0,4)){ const exp=expectOrPace('sales',x,month)||0; if(v.total>exp) extra+=v.total-exp; }
-    out.eoy={sales:e.total+extra,method:e.method,budget:fy?Object.values(fy).reduce((a,x)=>a+x.total,0):null,backlogLater:backlogLater(month)};
+    // sales so far this year (closed months + this month to date), for the year-end bar
+    let ytd=out.sales.done??0; for(let k=1;k<+month.slice(5);k++) ytd+=seriesVal('sales',`${month.slice(0,4)}-${pad(k)}`)||0;
+    out.eoy={ytdNow:ytd,sales:e.total+extra,method:e.method,budget:fy?Object.values(fy).reduce((a,x)=>a+x.total,0):null,backlogLater:backlogLater(month)};
   }
   if(out.net&&out.net.stP!=null&&out.net.ccP!=null){
     const st=trendEOY('started',month,out.net.stP), cc=trendEOY('cancels',month,out.net.ccP);
@@ -1255,7 +1262,7 @@ function districtTotals(rows,month){
   if(dol.length){ const book=dol.reduce((a,r)=>a+r.cancel.book,0); T.cancel={now:dol.reduce((a,r)=>a+r.cancel.prod,0)/book*100,proj:dol.reduce((a,r)=>a+r.cancel.proj*r.cancel.book,0)/book,n:sum(r=>r.cancel?.n),partial:dol.length<rows.filter(r=>r.cancel).length}; }
   if(any(r=>r.voids)){ const st=sum(r=>r.voids?.stops); T.voids={n:sum(r=>r.voids?.n),projN:sum(r=>r.voids?.projN),stops:st,now:st?sum(r=>r.voids?.n)/st*100:null,proj:st?sum(r=>r.voids?.projN)/st*100:null}; }
   if(any(r=>r.net)) T.net={now:sum(r=>r.net?.now),proj:sum(r=>r.net?.proj),units:sum(r=>r.net?.units),unitsProj:sum(r=>r.net?.unitsProj)};
-  if(any(r=>r.eoy)){ T.eoy={backlogLater:sum(r=>r.eoy?.backlogLater),sales:sum(r=>r.eoy?.sales),budget:rows.some(r=>r.eoy?.budget!=null)?sum(r=>r.eoy?.budget):null,net:any(r=>r.eoy?.net)?sum(r=>r.eoy?.net):null,netUnits:any(r=>r.eoy?.netUnits)?sum(r=>r.eoy?.netUnits):null}; }
+  if(any(r=>r.eoy)){ T.eoy={ytdNow:sum(r=>r.eoy?.ytdNow),backlogLater:sum(r=>r.eoy?.backlogLater),sales:sum(r=>r.eoy?.sales),budget:rows.some(r=>r.eoy?.budget!=null)?sum(r=>r.eoy?.budget):null,net:any(r=>r.eoy?.net)?sum(r=>r.eoy?.net):null,netUnits:any(r=>r.eoy?.netUnits)?sum(r=>r.eoy?.netUnits):null}; }
   const dbv=state.roster.bv?.[month];
   if(dbv||any(r=>r.bv)){ const start=dbv?dbv.total.annual:sum(r=>r.bv?.start); T.bv={start,proj:start+(T.net?T.net.proj:0),src:dbv?'bv':'sum'};
     if(T.eoy&&any(r=>r.eoy?.bv!=null)) T.eoy.bv=T.bv.proj+sum(r=>r.eoy?.bv!=null?r.eoy.bv-r.bv.proj:0); }
@@ -1277,7 +1284,7 @@ function kpiTiles(k){
   const now=(s)=>`<span class="s">${s}</span>`;
   if(k.sales){ const p=k.sales.budget?k.sales.proj/k.sales.budget*100:null;
     const bl=!f&&k.sales.backlog>0?k.sales.backlog:0, bud=k.sales.budget;
-    t.push(['Sales to budget',p!=null?pct1(p):money(k.sales.proj),`${f?'final':'projected'} ${money(k.sales.proj)}${bud?` of ${money(bud)}`:' · no budget loaded'} · now ${money(k.sales.now)}${bl?` <span class="pend">incl. ${money(bl)} pending</span>`:''}`,p!=null?trackBadge(p>=100,f):'',null,null,bud?miniBar((k.sales.done??k.sales.now)/bud*100,bl/bud*100):'']); }
+    t.push(['Sales to budget',p!=null?pct1(p):money(k.sales.proj),`${f?'final':'projected'} ${money(k.sales.proj)}${bud?` of ${money(bud)}`:' · no budget loaded'} · now ${money(k.sales.now)}${bl?` <span class="pend">incl. ${money(bl)} pending</span>`:''}`,p!=null?trackBadge(p>=100,f):'',null,null,bud?projBar((k.sales.done??k.sales.now)/bud*100,bl/bud*100,p):'']); }
   else t.push(['Sales to budget','—','no sales data yet','']);
   if(k.comp){ const p=k.comp.stops?k.comp.projDone/k.comp.stops*100:null;
     const cap=k.comp.stops?k.comp.ceiling/k.comp.stops*100:null;
@@ -1298,7 +1305,7 @@ function eoyTiles(k,month){
   const e=k.eoy, y=month.slice(0,4), t=[];
   if(!e) return t;
   if(e.sales!=null){ const p=e.budget?e.sales/e.budget*100:null;
-    t.push([`Sales · FY${y.slice(2)} year end`,p!=null?pct1(p):money(e.sales),`projected ${money(e.sales)}${e.budget?` of ${money(e.budget)} budget`:' · no FY budget'}${e.method==='pace'?' · at this year’s pace (no history)':''}${e.backlogLater>0?` · <span class="pend">incl. ${money(e.backlogLater)} backlog already scheduled for later months</span>`:''}`,p!=null?trendBadge(p>=100):'']); }
+    t.push([`Sales · FY${y.slice(2)} year end`,p!=null?pct1(p):money(e.sales),`projected ${money(e.sales)}${e.budget?` of ${money(e.budget)} budget`:' · no FY budget'}${e.method==='pace'?' · at this year’s pace (no history)':''}${e.backlogLater>0?` · <span class="pend">incl. ${money(e.backlogLater)} backlog already scheduled for later months</span>`:''}`,p!=null?trendBadge(p>=100):'',null,null,e.budget?projBar((e.ytdNow||0)/e.budget*100,0,p):'']); }
   if(e.netUnits!=null) t.push([`Net gain · FY${y.slice(2)} year end`,fmt('netGain',Math.round(e.netUnits)),'projected customers started − cancelled for the year',`<span class="pb ${e.netUnits>=0?'ok':'no'}">${e.netUnits>=0?'GAINING':'SHRINKING'}</span>`]);
   if(e.bv!=null) t.push([`Business valuation · Dec 31`,money(e.bv),`projected · ${fmt('netGainVal',e.bv-(k.bv?.proj??e.bv))} after this month`,`<span class="pb ${e.bv>=(k.bv?.start??e.bv)?'ok':'no'}">${e.bv>=(k.bv?.start??e.bv)?'GROWING':'SHRINKING'}</span>`]);
   return t;
@@ -1306,11 +1313,13 @@ function eoyTiles(k,month){
 function growthTile(g,month,small){
   const y=+month.slice(0,4);
   const rows=[['Sales',g?.sales,'FY sales: projected year end vs. last year'],['Business valuation',g?.bv,'Dec 31 BV: projected vs. last year'],['Revenue',g?.revenue,'needs revenue history']];
-  const scale=Math.max(10,...rows.map(r=>r[1]?Math.abs(r[1].pct):0));
+  // one scale for all three bars, rounded up to a clean step and printed under the bars
+  const top=Math.max(10,...rows.map(r=>r[1]?Math.abs(r[1].pct):0)), scale=Math.ceil(top/10)*10;
   const bar=([l,v,why])=>{ if(!v) return `<span class="gr"><span class="grl">${l}</span><span class="grt na"></span><span class="grv na">${l==='Revenue'?'needs revenue for the same months in both years':l==='Business valuation'?(state.roster.bv?.[`${y-1}-12`]?'needs this month’s BV for this branch':'needs BV for Dec '+(y-1)+' and this month'):'no data'}</span></span>`;
     const w=Math.min(Math.abs(v.pct)/scale,1)*50, pos=v.pct>=0;
     return `<span class="gr"><span class="grl">${l}</span><span class="grt"><span class="grc"></span><span class="grf ${pos?'up':'down'}" style="${pos?'left:50%':`left:${50-w}%`};width:${w}%"></span></span><span class="grv ${pos?'up':'down'}"><b>${v.pct>=0?'+':''}${v.pct.toFixed(1)}%</b>${small?(v.label&&v.label!=='FY'?` <span class="grn">${esc(v.label)}</span>`:''):` · ${money(v.now)} vs ${money(v.prev)}${v.note?` <span class="grn">(${esc(v.note)})</span>`:''}`}</span></span>`; };
-  return `<div class="${small?'mt':'kpi'} growth"><span class="l">Growth · FY${String(y).slice(2)} vs FY${String(y-1).slice(2)}</span>${rows.map(bar).join('')}</div>`;
+  const axis=`<span class="gr gaxis"><span></span><span class="gax"><span>−${scale}%</span><span>0</span><span>+${scale}%</span></span><span></span></span>`;
+  return `<div class="${small?'mt':'kpi'} growth"><span class="l">Growth · FY${String(y).slice(2)} vs FY${String(y-1).slice(2)}</span>${rows.map(bar).join('')}${axis}</div>`;
 }
 const trendBadge=ok=>`<span class="pb ${ok?'ok':'no'}">${ok?'ON TRACK':'OFF TRACK'}</span>`;
 function renderDistrict(c){
