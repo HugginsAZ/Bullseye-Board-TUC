@@ -1193,6 +1193,10 @@ function branchKpis(b,month){
     const stP=trendEOM('started',month,st,sShare), ccP=trendEOM('cancels',month,cc,el);
     const stN=trendEOM('startedN',month,seriesVal('startedN',month),sShare), ccN=trendEOM('cancelN',month,seriesVal('cancelN',month),el);
     out.net={now:B.netGainVal,proj:stP!=null&&ccP!=null?stP-ccP:toEOM(B.netGainVal,el),units:B.netGain,unitsProj:stN!=null&&ccN!=null?stN-ccN:toEOM(B.netGain,el),stP,ccP,stN,ccN}; }
+  // revenue this month: invoiced revenue when uploaded, otherwise completed $ from the route report
+  const rNow=seriesVal('revenue',month);
+  if(rNow!=null){ const rb=state.roster.plans?.[month.slice(0,4)]?.revenue?.[b.code]?.[month];
+    out.revenue={now:rNow,proj:trendEOM('revenue',month,rNow,el),budget:rb?rb.total:null,src:state.months[month]?.revenue?'invoiced':'completed'}; }
   const bv=state.roster.bv?.[month];
   const start=bv?bv.total.annual:(B.bookStartVal||null);
   if(start!=null) out.bv={start,proj:start+(out.net?out.net.proj:0),src:bv?'bv':'book'};
@@ -1261,6 +1265,9 @@ function districtTotals(rows,month){
   const dol=rows.filter(r=>r.cancel&&r.cancel.basis==='dollars'&&r.cancel.book>0);
   if(dol.length){ const book=dol.reduce((a,r)=>a+r.cancel.book,0); T.cancel={now:dol.reduce((a,r)=>a+r.cancel.prod,0)/book*100,proj:dol.reduce((a,r)=>a+r.cancel.proj*r.cancel.book,0)/book,n:sum(r=>r.cancel?.n),partial:dol.length<rows.filter(r=>r.cancel).length}; }
   if(any(r=>r.voids)){ const st=sum(r=>r.voids?.stops); T.voids={n:sum(r=>r.voids?.n),projN:sum(r=>r.voids?.projN),stops:st,now:st?sum(r=>r.voids?.n)/st*100:null,proj:st?sum(r=>r.voids?.projN)/st*100:null}; }
+  if(any(r=>r.revenue)){ const budAll=rows.filter(r=>r.revenue).every(r=>r.revenue.budget!=null);
+    T.unbudRevProj=sum(r=>r.revenue&&r.revenue.budget==null?r.revenue.proj:0); T.unbudRevNow=sum(r=>r.revenue&&r.revenue.budget==null?r.revenue.now:0);
+    T.revenue={now:sum(r=>r.revenue?.now),proj:sum(r=>r.revenue?.proj),budget:rows.some(r=>r.revenue?.budget!=null)?sum(r=>r.revenue?.budget):null,partial:!budAll,unbudgeted:rows.filter(r=>r.revenue&&r.revenue.budget==null).map(r=>r.code)}; }
   if(any(r=>r.net)) T.net={now:sum(r=>r.net?.now),proj:sum(r=>r.net?.proj),units:sum(r=>r.net?.units),unitsProj:sum(r=>r.net?.unitsProj)};
   if(any(r=>r.eoy)){ T.eoy={ytdNow:sum(r=>r.eoy?.ytdNow),backlogLater:sum(r=>r.eoy?.backlogLater),sales:sum(r=>r.eoy?.sales),budget:rows.some(r=>r.eoy?.budget!=null)?sum(r=>r.eoy?.budget):null,net:any(r=>r.eoy?.net)?sum(r=>r.eoy?.net):null,netUnits:any(r=>r.eoy?.netUnits)?sum(r=>r.eoy?.netUnits):null}; }
   const dbv=state.roster.bv?.[month];
@@ -1297,8 +1304,12 @@ function kpiTiles(k){
   if(k.net){ const u=k.net.unitsProj??k.net.units;
     t.push(['Net gain',fmt('netGain',Math.round(u)),`${f?'final':'projected'} customers (started − cancelled) · now ${fmt('netGain',k.net.units)}`,trackBadge(u>=0,f,['GAINING','SHRINKING'])]); }
   else t.push(['Net gain','—','needs sales + cancel detail','']);
-  if(k.bv) t.push(['Business valuation',money(k.bv.proj),`${f?'end of month':'projected end of month'} · ${money(k.bv.start)} at the start${k.bv.src==='book'?' (from the customer list)':''} · ${fmt('netGainVal',k.bv.proj-k.bv.start)}`,trackBadge(k.bv.proj>=k.bv.start,f,['GROWING','SHRINKING'])]);
-  else t.push(['Business valuation','—','upload BV or a customer list','']);
+  if(k.revenue){ const rv=k.revenue, bud=rv.budget;
+    // with a branch that has no revenue budget (e.g. a new acquisition), compare only the budgeted branches
+    const projB=k.code==='DSW'&&rv.partial?rv.proj-(k.unbudRevProj||0):rv.proj, nowB=k.code==='DSW'&&rv.partial?rv.now-(k.unbudRevNow||0):rv.now;
+    const p=bud?projB/bud*100:null;
+    t.push(['Revenue',p!=null?pct1(p):money(rv.proj),`${f?'final':'projected'} ${money(rv.proj)}${bud?` · ${money(projB)} of ${money(bud)} budget`:' · no revenue budget'}${rv.partial&&rv.unbudgeted?.length?` (${rv.unbudgeted.join(', ')} not budgeted)`:''} · now ${money(rv.now)}${rv.src==='completed'?' completed':''}`,p!=null?trackBadge(p>=100,f):'',null,null,bud?projBar(nowB/bud*100,0,p):'']); }
+  else t.push(['Revenue','—','upload revenue or a route report','']);
   return t;
 }
 function eoyTiles(k,month){
@@ -1328,7 +1339,9 @@ function renderDistrict(c){
   sel.innerHTML=ms.length?ms.slice().reverse().map(m=>`<option value="${m}" ${m===state.dMonth?'selected':''}>${esc(monthName(m))}</option>`).join(''):'<option>No reports yet</option>';
   sel.disabled=!ms.length; sel.onchange=e=>{ state.dMonth=e.target.value; render(); };
   document.querySelectorAll('.admin').forEach(el=>el.style.display='none');
-  $('#banner').innerHTML='';
+  // when the newest branch numbers were published (the district page reads the branch files directly)
+  const pubAt=CFG.branches.map(b=>state.boards[b.code]?.at).filter(Boolean).sort().pop();
+  $('#banner').innerHTML=pubAt?`<div class="asof">Numbers as of ${esc(new Date(pubAt).toLocaleString(undefined,{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}))}</div>`:'';
   if(!state.dMonth){ c.innerHTML='<div class="empty"><h2>No numbers posted yet</h2><p>Branch numbers appear here after the next update.</p></div>'; return; }
   const m=state.dMonth, rows=CFG.branches.map(b=>branchKpis(b,m)), T=districtTotals(rows,m);
   activate(CFG.district.code);
@@ -1352,7 +1365,8 @@ function renderDistrict(c){
       <span>Backlog: sales already written but not completed, counted in the totals and drawn dashed, because a customer can still back out or the work can slip into next month. This month’s work dates count toward the month (the month can’t project below completed + pending); later work dates set a floor for those months in the year-end projection.</span>
       <span>Year end: actual closed months, plus this month’s projection, plus each remaining month on the same 3-year trend; compared with the FY budget plan. Branches without history use this year’s pace.</span>
       <span>Sales: captured sales from Sales Details vs. the DOR sales budget. Route completion: completed vs. every order on the route completion report. Cancel %: annual $ cancelled ÷ the active book (company Net Gain method). Void %: voided orders ÷ total orders. Net gain: recurring $ started − $ cancelled.</span>
-      <span>Business valuation: the BV export’s beginning annual BV (or the customer list’s active annual $ when no BV is loaded), plus projected net gain.</span></div></details>`;
+      <span>Revenue: invoiced revenue this month (revenue upload; completed $ from the route report when there isn’t one), projected to month end on the same 3-year trend, against the revenue budget in the FY budget plan.</span>
+      <span>Business valuation (year end): the BV export’s beginning annual BV (or the customer list’s active annual $ when no BV is loaded), plus projected net gain.</span></div></details>`;
 }
 /* ---------- tech detail ---------- */
 function openTech(id){
@@ -1483,9 +1497,15 @@ function parseReport(file,wb){
       for(const r of rows){ const t=kind[String(r[4]||'').trim()], code=String(r[3]||'').trim().toUpperCase();
         if(!t||String(r[5]||'').trim()!=='Forecast'||!/^[A-Z]{2,4}$/.test(code)||code==='TOTAL') continue;
         cols.forEach((j,k)=>{ const m=`${year}-${pad(k+1)}`, b=((budget[code]||(budget[code]={}))[m]||(budget[code][m]={total:0,rec:0,ot:0})); b[t]=num(r[j])||0; }); }
-      out.plan={year,workdays,budget};
+      // revenue budget: rows "One Time Revenue" / "Recurring Revenue" for service class "All", months in a "26-Jan" header
+      const revenue={}; const rh=rows.findIndex(r=>r.some(c=>String(c).trim()==='BudgetType'));
+      if(rh>=0){ const rcols=[]; rows[rh].forEach((c,j)=>{ const mm=String(c).trim().match(/^(\d\d)-([A-Za-z]{3})/); if(mm){ const k=MN.indexOf(mm[2].toLowerCase()); if(k>=0) rcols.push([j,`20${mm[1]}-${pad(k+1)}`]); } });
+        for(const r of rows.slice(rh+1)){ const bt=String(r[3]||'').trim(), cls=String(r[4]||'').trim(), code=String(r[1]||'').trim().toUpperCase();
+          if(cls!=='All'||!/^[A-Z]{2,4}$/.test(code)) continue; const f=/^recurring revenue$/i.test(bt)?'rec':/^one[- ]?time revenue$/i.test(bt)?'ot':null; if(!f) continue;
+          for(const [j,m] of rcols){ const b=((revenue[code]||(revenue[code]={}))[m]||(revenue[code][m]={rec:0,ot:0,total:0})); b[f]=num(r[j])||0; b.total=b.rec+b.ot; } } }
+      out.plan={year,workdays,budget,revenue};
       const fy=c=>Object.values(budget[c]||{}).reduce((a,x)=>a+x.total,0);
-      out.summary=`FY${year} budget plan: working days for ${Object.keys(workdays).length} months; sales budget for ${Object.keys(budget).join(', ')}${budget[BRANCH]?` (${BRANCH} ${money(fy(BRANCH))} for the year)`:''}.`;
+      out.summary=`FY${year} budget plan: working days for ${Object.keys(workdays).length} months; sales budget for ${Object.keys(budget).join(', ')}; revenue budget for ${Object.keys(revenue).join(', ')||'none'}${budget[BRANCH]?` (${BRANCH} ${money(fy(BRANCH))} for the year)`:''}.`;
       return out;
     }
     if(d.type==='bv'){
@@ -1845,7 +1865,7 @@ async function publishAll(){
     await gh('/git/refs/heads/'+br,tok,{method:'PATCH',body:JSON.stringify({sha:nc.sha})});
     for(const code of codes) state.loadedAt[code]=stamp;
     state.dirtySet.clear(); state.dirty=false; $('#banner').innerHTML=bannerHTML();
-    st.className='status ok'; st.textContent=`Published ${codes.join(', ')}. Pages update in a minute or two.`;
+    st.className='status ok'; st.textContent=`Published ${codes.join(', ')}. The ${CFG.district?.name||'district'} page reads these same files, so it updates too. Pages refresh in a minute or two.`;
   }catch(e){
     st.className='status err';
     st.textContent=e.status===401?'GitHub didn’t accept the key. It may have expired; click GitHub key to paste a new one.':e.status===403||e.status===404?'The key can’t write to this repository. Check it has Contents: Read and write on '+CFG.repo+'.':e.status===409||e.status===422?'Someone else saved to the repository at the same moment. Click Publish again.':'Couldn’t reach GitHub. Check your connection and try again, or use Download all.';
