@@ -1432,6 +1432,7 @@ function detect(rows){
     if(has('Cancel Date')&&has('Tech Name')) return {type:'cancel',hi:i,h};
     if(has('Employee Status Description')&&has('Location Description')) return {type:'employees',hi:i,h};
     if(has('Sales Type')&&has('Technician Name')) return {type:'sales',hi:i,h};
+    if(h.includes('Morning #')&&h.some(c=>/^Week \d/i.test(c))) return {type:'checkin',hi:i,h};
     if(h.some(c=>/^FY'?\d\d Budget/i.test(c))&&rows.slice(i,i+6).some(r=>r.some(c=>String(c).trim()==='Working Days'))) return {type:'plan',hi:i,h};
     if(has('ClassCode')&&has('Sales Budget')) return {type:'dor',hi:i,h};
     if(has('Service Class')&&has('Beginning Annual BV')) return {type:'bv',hi:i,h};
@@ -1484,6 +1485,7 @@ function parseReport(file,wb){
       out.summary=`${n} pending sales: ${now?`${money(now.total)} scheduled in ${monthName(cur)} (${now.n} orders)`:`nothing for ${monthName(cur)}`}${later?`, ${money(later)} in later months`:''}. Replaces the previous backlog.`;
       return out;
     }
+    if(d.type==='checkin'){ const e=new Error('This is the weekly check-in tab of the Sales Trend Tracker (Week 1, Morning #…), not the budget. In the workbook, open the FY budget tab (the one that starts with “FY’26 Budget $$” and “Working Days”), save that tab as CSV, and upload it.'); e.userFacing=true; throw e; }
     if(d.type==='netgain'){ const e=new Error('This is the Net Gain summary. The board doesn’t need it: it builds net gain from Sales Details and Cancel Detail, month by month and branch by branch. For history, upload a 3-year Cancel Detail export instead.'); e.userFacing=true; throw e; }
     if(d.type==='plan'){
       // FY budget plan: monthly working days and sales budget (total, recurring, one-time) for every branch. Read once a year.
@@ -1680,7 +1682,7 @@ async function onFiles(files){
       }
       const found=[]; let recognized=false;
       for(const b of targets){ const p=withBranch(b,parseFor); if(p) recognized=true; if(hasContent(p)) found.push({branch:b.code,p}); }
-      if(!recognized) throw new Error('Not recognized. Supported: customer list, cancel detail, sales details, route completion details, open orders, DOR sales budget and the employment list.');
+      if(!recognized) throw new Error('Not recognized. Supported: route completion details, cancel detail, sales details, backlog, customer list (Service Setup List), open orders, employment list, business valuation, revenue, DOR sales budget, and the FY budget tab of the Sales Trend Tracker (CSV).');
       if(!found.length) throw new Error(`Recognized, but nothing in it belongs to ${targets.map(b=>b.code).join(', ')}. Check the branch filter on the export.`);
       state.pending=state.pending.filter(x=>!(x.p.file===f.name)).concat(found);
       const type=found[0].p.type;
