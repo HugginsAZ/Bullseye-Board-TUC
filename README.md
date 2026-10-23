@@ -59,13 +59,11 @@ Open a **fresh** `tuc/?admin` tab, upload, click **Save to board**, then **Publi
 
 ## DSW District projections
 
-- **Month end:** what's in so far, plus the rest of the month at the **average** of each branch's preceding years for that month (scaled to how this year is running). Early in the month that leans on history; by the last week it's almost all actual. Sales can't project below completed + pending backlog. Route completion can't project above 100% minus projected voids.
-- **Year end:** closed months + this month's projection + each remaining month on the same trend, against the FY budget plan. Backlog already scheduled for later months sets a minimum for those months.
-- **Growth (FY vs last FY):** three bars on a fixed, labeled scale.
-  - **Sales:** projected year end vs last year, same branches only.
-  - **Business valuation:** projected Dec 31 vs last Dec 31 (needs each branch's BV for this month and last December).
-  - **Revenue:** full year once last year is complete; until then, the same closed months in both years. History comes from the revenue upload; the current year rolls forward from completed $ on the daily route report.
-- Branches without history (e.g. PXW, acquired Aug 2026) use this year's pace.
+- **Month end:** so far ÷ workdays complete × workdays in the month (company working-day counts). Sales can't project below completed + pending backlog. Route completion can't project above 100% minus projected voids.
+- **Year end:** year to date ÷ workdays complete this year × workdays in the year, against the FY budget plan. A branch that joined mid-year (PXW) starts its pace at its first full month.
+- **3-yr trend** figures on the tiles are a cross-check only: the preceding years' average for that month (scaled to this year), not part of the projection.
+- **Growth (FY vs last FY):** three bars on a fixed, labeled scale — sales (same branches only), business valuation (projected Dec 31 vs last Dec 31), revenue (full year once last year is complete; until then the same closed months in both years).
+- **Branches without a prior year (PXW):** growth compares this month's projected daily pace with its first full month (sales, revenue) and the book now vs the start of that month (BV), labeled "since …", until a full year has built up.
 
 ## Folder layout
 
