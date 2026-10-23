@@ -59,7 +59,7 @@ Open a **fresh** `tuc/?admin` tab, upload, click **Save to board**, then **Publi
 
 ## DSW District projections
 
-- **Month end:** so far ÷ workdays complete × workdays in the month (company working-day counts). Sales can't project below completed + pending backlog. Route completion can't project above 100% minus projected voids.
+- **Month end:** so far ÷ workdays complete × workdays in the month (company working-day counts). One-time **restoration** sales completed are added as-is but left out of the daily pace (month and year end), since they rarely repeat; all other sales project. Sales can't project below completed + pending backlog. Route completion can't project above 100% minus projected voids.
 - **Year end:** year to date ÷ workdays complete this year × workdays in the year, against the FY budget plan. A branch that joined mid-year (PXW) starts its pace at its first full month.
 - **3-yr trend** figures on the tiles are a cross-check only: the preceding years' average for that month (scaled to this year), not part of the projection.
 - **Growth (FY vs last FY):** three bars on a fixed, labeled scale — sales (same branches only), business valuation (projected Dec 31 vs last Dec 31), revenue (full year once last year is complete; until then the same closed months in both years).
