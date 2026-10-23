@@ -1114,6 +1114,9 @@ const SERIES={
   started:d=>d?.sales?Object.values(d.sales).reduce((a,v)=>a+(v.recVal||0),0):null,
   cancels:d=>d?.cancel?Object.values(d.cancel).reduce((a,v)=>a+(v.prod||0),0):null,
   revenue:d=>d?.revenue?d.revenue.total:d?.route&&Object.values(d.route).some(v=>v.doneAmt!=null)?Object.values(d.route).reduce((a,v)=>a+(v.doneAmt||0),0):null,
+  // one-time restoration jobs: large and lumpy, so they count as completed but don't set the daily pace
+  resto:d=>d?.salesClass?Object.entries(d.salesClass).filter(([c])=>/^RESTO/i.test(c)).reduce((a,[,v])=>a+(v.ot||0),0):(d?.sales?0:null),
+  salesCore:d=>{ const t=SERIES.sales(d); if(t==null) return null; return t-(SERIES.resto(d)||0); },
   startedN:d=>d?.sales?Object.values(d.sales).reduce((a,v)=>a+(v.rec||0),0):null,   // recurring setups started (count)
   cancelN:d=>d?.cancel?Object.values(d.cancel).reduce((a,v)=>a+(v.n||0),0):null,      // setups cancelled (count)
 };
@@ -1182,8 +1185,10 @@ function branchKpis(b,month){
   const sNow=seriesVal('sales',month), sShare=D&&!D.missing?D.exp:(S?S.exp:el);
   if(sNow!=null){ const pend=backlogFor(month)?.total||0;
     // backlog is counted in: the month ends at no less than completed + pending, and the trend covers the rest
-    const proj=Math.max(trendEOM('sales',month,sNow,sShare),sNow+pend);
-    out.sales={now:sNow+pend,done:sNow,proj,budget:D&&!D.missing?D.budget:null,share:sShare,check:histEOM('sales',month,sNow,sShare),backlog:pend}; }
+    // restoration one-time sales completed this month are added as-is; everything else projects at the daily pace
+    const resto=seriesVal('resto',month)||0, core=sNow-resto;
+    const proj=Math.max(resto+trendEOM('salesCore',month,core,sShare),sNow+pend);
+    out.sales={now:sNow+pend,done:sNow,resto,proj,budget:D&&!D.missing?D.budget:null,share:sShare,check:histEOM('sales',month,sNow,sShare),backlog:pend}; }
   if(B.stops&&B.completed!=null){
     // Voided orders stay in total stops but can never be completed, so the most a branch can reach is stops − projected voids
     const projVoids=Math.min(B.stops,toEOM(B.voidN||0,el)), ceiling=B.stops-projVoids;
@@ -1207,7 +1212,9 @@ function branchKpis(b,month){
   if(start!=null) out.bv={start,proj:start+(out.net?out.net.proj:0),src:bv?'bv':'book'};
   // Year end against the FY budget plan
   if(out.sales){
-    const e=trendEOY('sales',month,sShare), fy=state.roster.plans?.[month.slice(0,4)]?.budget?.[b.code];
+    // year end: the pace runs on sales without one-time restoration; restoration completed so far is added as-is
+    let restoYTD=0; for(let k=1;k<=+month.slice(5);k++) restoYTD+=seriesVal('resto',`${month.slice(0,4)}-${pad(k)}`)||0;
+    const ec=trendEOY('salesCore',month,sShare), e={total:ec.total+restoYTD,since:ec.since,method:ec.method}, fy=state.roster.plans?.[month.slice(0,4)]?.budget?.[b.code];
     const extra=0; // later-month backlog is shown as a note; the pace already covers future sales
     // sales so far this year (closed months + this month to date), for the year-end bar
     let ytd=out.sales.done??0; for(let k=1;k<+month.slice(5);k++) ytd+=seriesVal('sales',`${month.slice(0,4)}-${pad(k)}`)||0;
@@ -1279,7 +1286,7 @@ function districtTotals(rows,month){
   if(any(r=>r.sales)){
     const dDor=state.roster.dor?.[month];
     const budAll=rows.every(r=>!r.sales||r.sales.budget!=null);
-    T.sales={check:rows.filter(r=>r.sales).every(r=>r.sales.check!=null)?sum(r=>r.sales?.check):null,now:sum(r=>r.sales?.now),done:sum(r=>r.sales?.done),proj:sum(r=>r.sales?.proj),backlog:sum(r=>r.sales?.backlog),budget:dDor?dDor.total.budget:(budAll?sum(r=>r.sales?.budget):null)};
+    T.sales={resto:sum(r=>r.sales?.resto),check:rows.filter(r=>r.sales).every(r=>r.sales.check!=null)?sum(r=>r.sales?.check):null,now:sum(r=>r.sales?.now),done:sum(r=>r.sales?.done),proj:sum(r=>r.sales?.proj),backlog:sum(r=>r.sales?.backlog),budget:dDor?dDor.total.budget:(budAll?sum(r=>r.sales?.budget):null)};
   }
   if(any(r=>r.comp)) T.comp={done:sum(r=>r.comp?.done),projDone:sum(r=>r.comp?.projDone),stops:sum(r=>r.comp?.stops),projVoids:sum(r=>r.comp?.projVoids),ceiling:sum(r=>r.comp?.ceiling)};
   const dol=rows.filter(r=>r.cancel&&r.cancel.basis==='dollars'&&r.cancel.book>0);
@@ -1311,7 +1318,7 @@ function kpiTiles(k){
   const now=(s)=>`<span class="s">${s}</span>`;
   if(k.sales){ const p=k.sales.budget?k.sales.proj/k.sales.budget*100:null;
     const bl=!f&&k.sales.backlog>0?k.sales.backlog:0, bud=k.sales.budget;
-    t.push(['Sales to budget',p!=null?pct1(p):money(k.sales.proj),`${f?'final':'projected'} ${money(k.sales.proj)}${bud?` of ${money(bud)}`:' · no budget loaded'} · now ${money(k.sales.now)}${bl?` <span class="pend">incl. ${money(bl)} pending</span>`:''}${!f&&k.sales.check!=null?` · <span class="chk">3-yr trend ${money(k.sales.check)}</span>`:''}`,p!=null?trackBadge(p>=100,f):'',null,null,bud?projBar((k.sales.done??k.sales.now)/bud*100,bl/bud*100,p):'']); }
+    t.push(['Sales to budget',p!=null?pct1(p):money(k.sales.proj),`${f?'final':'projected'} ${money(k.sales.proj)}${bud?` of ${money(bud)}`:' · no budget loaded'} · now ${money(k.sales.now)}${bl?` <span class="pend">incl. ${money(bl)} pending</span>`:''}${!f&&k.sales.resto>0?` · incl. ${money(k.sales.resto)} restoration (not projected forward)`:''}${!f&&k.sales.check!=null?` · <span class="chk">3-yr trend ${money(k.sales.check)}</span>`:''}`,p!=null?trackBadge(p>=100,f):'',null,null,bud?projBar((k.sales.done??k.sales.now)/bud*100,bl/bud*100,p):'']); }
   else t.push(['Sales to budget','—','no sales data yet','']);
   if(k.comp){ const p=k.comp.stops?k.comp.projDone/k.comp.stops*100:null;
     const cap=k.comp.stops?k.comp.ceiling/k.comp.stops*100:null;
@@ -1381,7 +1388,7 @@ function renderDistrict(c){
       ${r.el==null?'<p class="sub">No numbers for this month yet.</p>':`<div class="mtiles">${[...kpiTiles(r),...eoyTiles(r,m)].map(([l,v,sub,badge,_l,_c,bar])=>`<div class="mt ${badge&&badge.includes('pb no')?'off':badge?'onp':''}"><span class="l">${esc(l)}</span><span class="v">${v}</span>${bar||''}${badge||''}<span class="s">${sub}</span></div>`).join('')}${r.eoy?growthTile(r.growth,m,true):''}</div>`}
     </section>`).join('')}</div>
     <details class="foot"><summary>How projections work</summary><div class="srcs sub">
-      <span>Month end: so far ÷ workdays complete × workdays in the month (the company’s working-day counts). Sales never project below completed + pending backlog. The “3-yr trend” figure is a cross-check: what the preceding years’ average for that month says it would come to. Workdays follow the company’s working-day counts from the FY budget plan. Route completion and voids use the current pace; voided orders stay in total stops, so projected completion can never pass 100% minus the projected void rate. Closed months show final numbers.</span>
+      <span>Month end: so far ÷ workdays complete × workdays in the month (the company’s working-day counts). One-time restoration sales are added as completed but left out of the daily pace (they rarely repeat within the month); everything else projects. Sales never project below completed + pending backlog. The “3-yr trend” figure is a cross-check: what the preceding years’ average for that month says it would come to. Workdays follow the company’s working-day counts from the FY budget plan. Route completion and voids use the current pace; voided orders stay in total stops, so projected completion can never pass 100% minus the projected void rate. Closed months show final numbers.</span>
       <span>Backlog: sales already written but not completed, counted in the totals and drawn dashed, because a customer can still back out or the work can slip into next month. This month’s work dates count toward the month (the month can’t project below completed + pending); later work dates set a floor for those months in the year-end projection.</span>
       <span>Year end: year to date ÷ workdays complete this year × workdays in the year, against the FY budget plan. A branch that joined mid-year starts its pace at its first full month. Growth compares with last year; a branch without a prior year (PXW) compares this month’s daily pace with its first full month until a year has built up.</span>
       <span>Sales: captured sales from Sales Details vs. the DOR sales budget. Route completion: completed vs. every order on the route completion report. Cancel %: annual $ cancelled ÷ the active book (company Net Gain method). Void %: voided orders ÷ total orders. Net gain: recurring $ started − $ cancelled.</span>
