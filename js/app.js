@@ -1136,32 +1136,37 @@ function trendExpected(metric,m){
   if(!vals.length) return null;
   return vals.reduce((a,b)=>a+b,0)/vals.length; // average of the preceding years
 }
-// Month-end projection for a running total
-function trendEOM(metric,m,now,share){
-  if(now==null) return null;
-  if(share>=1) return now;
-  const hist=trendExpected(metric,m);
-  return hist!=null?now+(1-share)*hist:now/Math.max(share,0.02);
+// ---- Projections: straight pace on actual data ----
+// Month end = so far ÷ workdays complete × workdays in the month. Year end = the same formula over the year.
+// The 3-year trend is kept only as a cross-check shown next to the projection.
+function monthDays(m){ const pw=planWorkdays(m); if(pw) return pw; const [y,mo]=m.split('-').map(Number), hol=holidaySet(); let n=0; for(let d=1;d<=new Date(y,mo,0).getDate();d++) if(isWorkday(new Date(y,mo-1,d,12),hol)) n++; return n; }
+function trendEOM(metric,m,now,share){ if(now==null) return null; return share>=1?now:now/Math.max(share,0.02); }
+// Year to date ÷ workdays complete this year × workdays in the year. A branch that joined mid-year (e.g. an acquisition)
+// starts its clock at its first full month, so a partial first month doesn't drag the pace down.
+function paceYear(metric,m,share){
+  const y=m.slice(0,4), cur=+m.slice(5), vals=[];
+  for(let k=1;k<cur;k++) vals.push([`${y}-${pad(k)}`,seriesVal(metric,`${y}-${pad(k)}`)]);
+  let first=vals.findIndex(([,v])=>v!=null);
+  // a branch whose numbers start after January joined mid-year: its first month is partial, so the pace starts the month after
+  if(first>0&&first+1<vals.length&&vals[first+1][1]!=null) first++;
+  else if(first>=0&&first+1<vals.length&&vals[first+1][1]!=null&&vals[first][1]<0.5*vals[first+1][1]) first++;
+  let actual=0; for(const [,v] of vals) actual+=v||0;
+  const now=seriesVal(metric,m)||0; actual+=now;
+  let rateAmt=now, rateDays=share*monthDays(m);
+  if(first>=0) for(const [x,v] of vals.slice(first)){ rateAmt+=v||0; rateDays+=monthDays(x); }
+  const perDay=rateDays>0?rateAmt/rateDays:0;
+  const restThis=(1-Math.min(share,1))*monthDays(m); let later=0; for(let k=cur+1;k<=12;k++) later+=monthDays(`${y}-${pad(k)}`);
+  return {actual,perDay,restThis,later,total:actual+perDay*(restThis+later),since:first>=0?vals[first][0]:m};
 }
-// Expected value for a future month: the 3-year trend, or this year's average month when there's no history
-function expectOrPace(metric,x,m){
-  const e=trendExpected(metric,x); if(e!=null) return e;
-  const y=m.slice(0,4), done=[]; for(let j=1;j<+m.slice(5);j++){ const v=seriesVal(metric,`${y}-${pad(j)}`); if(v!=null) done.push(v); }
-  return done.length?done.reduce((a,b)=>a+b,0)/done.length:null;
-}
-// Year-end projection: closed months + this month + the rest of the year
-function trendEOY(metric,m,eom){
-  const y=m.slice(0,4); let total=0, method='trend';
-  for(let k=1;k<=12;k++){ const x=`${y}-${pad(k)}`;
-    if(x<m){ total+=seriesVal(metric,x)||0; continue; }
-    if(x===m){ total+=eom||0; continue; }
-    let e=trendExpected(metric,x);
-    if(e==null){ // no history: average of this year's closed months
-      const done=[]; for(let j=1;j<+m.slice(5);j++){ const v=seriesVal(metric,`${y}-${pad(j)}`); if(v!=null) done.push(v); }
-      e=done.length?done.reduce((a,b)=>a+b,0)/done.length:(eom||0); method='pace'; }
-    total+=e; }
-  return {total,method};
-}
+function trendEOY(metric,m,share){ const p=paceYear(metric,m,share); return {total:p.total,method:'pace',since:p.since}; }
+// Cross-check only: what the preceding years' average says the month / year should come to
+function histEOM(metric,m,now,share){ if(now==null||share>=1) return null; const h=trendExpected(metric,m); return h!=null?now+(1-share)*h:null; }
+function histEOY(metric,m,eom){ const y=m.slice(0,4); let t=0;
+  for(let k=1;k<=12;k++){ const x=`${y}-${pad(k)}`; if(x<m){ t+=seriesVal(metric,x)||0; continue; } if(x===m){ t+=eom||0; continue; } const e=trendExpected(metric,x); if(e==null) return null; t+=e; }
+  return t; }
+// Expected value for a future month (cross-check / BV): pace per workday × that month's workdays
+function expectOrPace(metric,x,m,share){ const p=paceYear(metric,m,share??1); return p.perDay*monthDays(x); }
+
 /* ---------- DSW district board: month-end projections for every branch ---------- */
 let DISTRICT=false;
 function monthsAcrossBranches(){ const set=new Set(); for(const b of CFG.branches) for(const m of Object.keys(state.boards[b.code]?.months||{})) if(m>=START_MONTH) set.add(m); return [...set].sort(); }
@@ -1178,7 +1183,7 @@ function branchKpis(b,month){
   if(sNow!=null){ const pend=backlogFor(month)?.total||0;
     // backlog is counted in: the month ends at no less than completed + pending, and the trend covers the rest
     const proj=Math.max(trendEOM('sales',month,sNow,sShare),sNow+pend);
-    out.sales={now:sNow+pend,done:sNow,proj,budget:D&&!D.missing?D.budget:null,share:sShare,hist:trendExpected('sales',month)!=null,backlog:pend}; }
+    out.sales={now:sNow+pend,done:sNow,proj,budget:D&&!D.missing?D.budget:null,share:sShare,check:histEOM('sales',month,sNow,sShare),backlog:pend}; }
   if(B.stops&&B.completed!=null){
     // Voided orders stay in total stops but can never be completed, so the most a branch can reach is stops − projected voids
     const projVoids=Math.min(B.stops,toEOM(B.voidN||0,el)), ceiling=B.stops-projVoids;
@@ -1196,27 +1201,25 @@ function branchKpis(b,month){
   // revenue this month: invoiced revenue when uploaded, otherwise completed $ from the route report
   const rNow=seriesVal('revenue',month);
   if(rNow!=null){ const rb=state.roster.plans?.[month.slice(0,4)]?.revenue?.[b.code]?.[month];
-    out.revenue={now:rNow,proj:trendEOM('revenue',month,rNow,el),budget:rb?rb.total:null,src:state.months[month]?.revenue?'invoiced':'completed'}; }
+    out.revenue={now:rNow,proj:trendEOM('revenue',month,rNow,el),check:histEOM('revenue',month,rNow,el),budget:rb?rb.total:null,src:state.months[month]?.revenue?'invoiced':'completed'}; }
   const bv=state.roster.bv?.[month];
   const start=bv?bv.total.annual:(B.bookStartVal||null);
   if(start!=null) out.bv={start,proj:start+(out.net?out.net.proj:0),src:bv?'bv':'book'};
   // Year end against the FY budget plan
   if(out.sales){
-    const e=trendEOY('sales',month,out.sales.proj), fy=state.roster.plans?.[month.slice(0,4)]?.budget?.[b.code];
-    // later months: never less than the backlog already scheduled for them
-    let extra=0; const blm=state.roster.backlog?.months||{};
-    for(const [x,v] of Object.entries(blm)) if(x>month&&x.slice(0,4)===month.slice(0,4)){ const exp=expectOrPace('sales',x,month)||0; if(v.total>exp) extra+=v.total-exp; }
+    const e=trendEOY('sales',month,sShare), fy=state.roster.plans?.[month.slice(0,4)]?.budget?.[b.code];
+    const extra=0; // later-month backlog is shown as a note; the pace already covers future sales
     // sales so far this year (closed months + this month to date), for the year-end bar
     let ytd=out.sales.done??0; for(let k=1;k<+month.slice(5);k++) ytd+=seriesVal('sales',`${month.slice(0,4)}-${pad(k)}`)||0;
-    out.eoy={ytdNow:ytd,sales:e.total+extra,method:e.method,budget:fy?Object.values(fy).reduce((a,x)=>a+x.total,0):null,backlogLater:backlogLater(month)};
+    out.eoy={ytdNow:ytd,sales:e.total+extra,since:e.since,check:histEOY('sales',month,out.sales.check),method:e.method,budget:fy?Object.values(fy).reduce((a,x)=>a+x.total,0):null,backlogLater:backlogLater(month)};
   }
   if(out.net&&out.net.stP!=null&&out.net.ccP!=null){
-    const st=trendEOY('started',month,out.net.stP), cc=trendEOY('cancels',month,out.net.ccP);
+    const st=trendEOY('started',month,sShare), cc=trendEOY('cancels',month,el);
     out.eoy=out.eoy||{}; out.eoy.net=st.total-cc.total;
-    if(out.net.stN!=null&&out.net.ccN!=null) out.eoy.netUnits=trendEOY('startedN',month,out.net.stN).total-trendEOY('cancelN',month,out.net.ccN).total;
-    // business valuation at year end: start of this month + this month's net gain + the rest of the year's
-    if(out.bv){ let rest=0; const y=month.slice(0,4);
-      for(let k=+month.slice(5)+1;k<=12;k++){ const x=`${y}-${pad(k)}`; const s2=expectOrPace('started',x,month), c2=expectOrPace('cancels',x,month); if(s2!=null&&c2!=null) rest+=s2-c2; }
+    if(out.net.stN!=null&&out.net.ccN!=null) out.eoy.netUnits=trendEOY('startedN',month,sShare).total-trendEOY('cancelN',month,el).total;
+    // business valuation at year end: start of this month + this month's net gain + the rest of the year at the same daily pace
+    if(out.bv){ const ps=paceYear('started',month,sShare), pc=paceYear('cancels',month,el);
+      const rest=(ps.perDay-pc.perDay)*ps.later;
       out.eoy.bv=out.bv.proj+rest; out.eoy.bvStartYear=out.bv.start; }
   }
   out.growth=growthFor(month,out);
@@ -1234,8 +1237,8 @@ function revenueGrowth(month){
     const cm=`${y}-${pad(k)}`; if(v!=null&&cm<month&&seriesVal('revenue',cm)!=null) both.push(k); }
   if(prevMonths.length===12){
     const prev=yearSum('revenue',y-1), cur=seriesVal('revenue',month);
-    const eom=cur!=null?trendEOM('revenue',month,cur,monthElapsed(month,state.months[month]?.sources?.route?.asOf)):null;
-    const fy=trendEOY('revenue',month,eom).total;
+    const sh=monthElapsed(month,state.months[month]?.sources?.route?.asOf);
+    const fy=trendEOY('revenue',month,sh).total;
     return prev&&fy?{pct:(fy/prev-1)*100,now:fy,prev,label:'FY'}:null;
   }
   if(both.length){ const cur=both.reduce((a,k)=>a+seriesVal('revenue',`${y}-${pad(k)}`),0), prev=both.reduce((a,k)=>a+seriesVal('revenue',`${y-1}-${pad(k)}`),0);
@@ -1243,8 +1246,25 @@ function revenueGrowth(month){
     return prev?{pct:(cur/prev-1)*100,now:cur,prev,label:span,note:`${span} vs same months last year`}:null; }
   return null;
 }
+// Growth for a branch without last year's numbers (e.g. PXW, acquired 2026): this month's projected daily pace
+// compared with its first full month, until a full prior year has built up
+function growthSince(metric,month,projMonth){
+  const base=paceYear(metric,month,1).since; if(!base||base>=month||projMonth==null) return null;
+  const bv=seriesVal(metric,base); if(!bv) return null;
+  const pct=((projMonth/monthDays(month))/(bv/monthDays(base))-1)*100;
+  return {pct,now:projMonth,prev:bv,label:`since ${monthName(base,true)}`,note:`${monthName(month,true)} pace vs ${monthName(base,true)} ${base.slice(0,4)} (no prior year yet)`};
+}
 function growthFor(month,k){
   const y=+month.slice(0,4), g={};
+  if(yearSum('sales',y-1)==null){
+    // no prior year yet: growth from the numbers available
+    g.sales=growthSince('sales',month,k.sales?.proj);
+    g.revenue=growthSince('revenue',month,k.revenue?.proj);
+    const base=paceYear('sales',month,1).since, snap=Object.values(state.bases||{}).sort((a,b)=>a.asOf<b.asOf?-1:1).pop();
+    const startBV=base&&snap?baseDollarsAtStart(base,snap):null;
+    g.bv=startBV&&k.bv?{pct:(k.bv.proj/startBV-1)*100,now:k.bv.proj,prev:startBV,label:`since ${monthName(base,true)} 1`,note:`book at the end of ${monthName(month,true)} vs ${monthName(base,true)} 1 (no prior year yet)`}:null;
+    return g;
+  }
   const last=yearSum('sales',y-1); g.sales=k.eoy?.sales!=null&&last?{pct:(k.eoy.sales/last-1)*100,now:k.eoy.sales,prev:last}:null;
   const prevBV=bvYearEnd(y-1), haveBVnow=!!state.roster.bv?.[month];
   g.bv=haveBVnow&&k.eoy?.bv!=null&&prevBV?{pct:(k.eoy.bv/prevBV-1)*100,now:k.eoy.bv,prev:prevBV}:null;
@@ -1259,7 +1279,7 @@ function districtTotals(rows,month){
   if(any(r=>r.sales)){
     const dDor=state.roster.dor?.[month];
     const budAll=rows.every(r=>!r.sales||r.sales.budget!=null);
-    T.sales={now:sum(r=>r.sales?.now),done:sum(r=>r.sales?.done),proj:sum(r=>r.sales?.proj),backlog:sum(r=>r.sales?.backlog),budget:dDor?dDor.total.budget:(budAll?sum(r=>r.sales?.budget):null)};
+    T.sales={check:rows.filter(r=>r.sales).every(r=>r.sales.check!=null)?sum(r=>r.sales?.check):null,now:sum(r=>r.sales?.now),done:sum(r=>r.sales?.done),proj:sum(r=>r.sales?.proj),backlog:sum(r=>r.sales?.backlog),budget:dDor?dDor.total.budget:(budAll?sum(r=>r.sales?.budget):null)};
   }
   if(any(r=>r.comp)) T.comp={done:sum(r=>r.comp?.done),projDone:sum(r=>r.comp?.projDone),stops:sum(r=>r.comp?.stops),projVoids:sum(r=>r.comp?.projVoids),ceiling:sum(r=>r.comp?.ceiling)};
   const dol=rows.filter(r=>r.cancel&&r.cancel.basis==='dollars'&&r.cancel.book>0);
@@ -1267,7 +1287,7 @@ function districtTotals(rows,month){
   if(any(r=>r.voids)){ const st=sum(r=>r.voids?.stops); T.voids={n:sum(r=>r.voids?.n),projN:sum(r=>r.voids?.projN),stops:st,now:st?sum(r=>r.voids?.n)/st*100:null,proj:st?sum(r=>r.voids?.projN)/st*100:null}; }
   if(any(r=>r.revenue)){ const budAll=rows.filter(r=>r.revenue).every(r=>r.revenue.budget!=null);
     T.unbudRevProj=sum(r=>r.revenue&&r.revenue.budget==null?r.revenue.proj:0); T.unbudRevNow=sum(r=>r.revenue&&r.revenue.budget==null?r.revenue.now:0);
-    T.revenue={now:sum(r=>r.revenue?.now),proj:sum(r=>r.revenue?.proj),budget:rows.some(r=>r.revenue?.budget!=null)?sum(r=>r.revenue?.budget):null,partial:!budAll,unbudgeted:rows.filter(r=>r.revenue&&r.revenue.budget==null).map(r=>r.code)}; }
+    T.revenue={check:rows.filter(r=>r.revenue).every(r=>r.revenue.check!=null)?sum(r=>r.revenue?.check):null,now:sum(r=>r.revenue?.now),proj:sum(r=>r.revenue?.proj),budget:rows.some(r=>r.revenue?.budget!=null)?sum(r=>r.revenue?.budget):null,partial:!budAll,unbudgeted:rows.filter(r=>r.revenue&&r.revenue.budget==null).map(r=>r.code)}; }
   if(any(r=>r.net)) T.net={now:sum(r=>r.net?.now),proj:sum(r=>r.net?.proj),units:sum(r=>r.net?.units),unitsProj:sum(r=>r.net?.unitsProj)};
   if(any(r=>r.eoy)){ T.eoy={ytdNow:sum(r=>r.eoy?.ytdNow),backlogLater:sum(r=>r.eoy?.backlogLater),sales:sum(r=>r.eoy?.sales),budget:rows.some(r=>r.eoy?.budget!=null)?sum(r=>r.eoy?.budget):null,net:any(r=>r.eoy?.net)?sum(r=>r.eoy?.net):null,netUnits:any(r=>r.eoy?.netUnits)?sum(r=>r.eoy?.netUnits):null}; }
   const dbv=state.roster.bv?.[month];
@@ -1291,7 +1311,7 @@ function kpiTiles(k){
   const now=(s)=>`<span class="s">${s}</span>`;
   if(k.sales){ const p=k.sales.budget?k.sales.proj/k.sales.budget*100:null;
     const bl=!f&&k.sales.backlog>0?k.sales.backlog:0, bud=k.sales.budget;
-    t.push(['Sales to budget',p!=null?pct1(p):money(k.sales.proj),`${f?'final':'projected'} ${money(k.sales.proj)}${bud?` of ${money(bud)}`:' · no budget loaded'} · now ${money(k.sales.now)}${bl?` <span class="pend">incl. ${money(bl)} pending</span>`:''}`,p!=null?trackBadge(p>=100,f):'',null,null,bud?projBar((k.sales.done??k.sales.now)/bud*100,bl/bud*100,p):'']); }
+    t.push(['Sales to budget',p!=null?pct1(p):money(k.sales.proj),`${f?'final':'projected'} ${money(k.sales.proj)}${bud?` of ${money(bud)}`:' · no budget loaded'} · now ${money(k.sales.now)}${bl?` <span class="pend">incl. ${money(bl)} pending</span>`:''}${!f&&k.sales.check!=null?` · <span class="chk">3-yr trend ${money(k.sales.check)}</span>`:''}`,p!=null?trackBadge(p>=100,f):'',null,null,bud?projBar((k.sales.done??k.sales.now)/bud*100,bl/bud*100,p):'']); }
   else t.push(['Sales to budget','—','no sales data yet','']);
   if(k.comp){ const p=k.comp.stops?k.comp.projDone/k.comp.stops*100:null;
     const cap=k.comp.stops?k.comp.ceiling/k.comp.stops*100:null;
@@ -1308,7 +1328,7 @@ function kpiTiles(k){
     // with a branch that has no revenue budget (e.g. a new acquisition), compare only the budgeted branches
     const projB=k.code==='DSW'&&rv.partial?rv.proj-(k.unbudRevProj||0):rv.proj, nowB=k.code==='DSW'&&rv.partial?rv.now-(k.unbudRevNow||0):rv.now;
     const p=bud?projB/bud*100:null;
-    t.push(['Revenue',p!=null?pct1(p):money(rv.proj),`${f?'final':'projected'} ${money(rv.proj)}${bud?` · ${money(projB)} of ${money(bud)} budget`:' · no revenue budget'}${rv.partial&&rv.unbudgeted?.length?` (${rv.unbudgeted.join(', ')} not budgeted)`:''} · now ${money(rv.now)}${rv.src==='completed'?' completed':''}`,p!=null?trackBadge(p>=100,f):'',null,null,bud?projBar(nowB/bud*100,0,p):'']); }
+    t.push(['Revenue',p!=null?pct1(p):money(rv.proj),`${f?'final':'projected'} ${money(rv.proj)}${bud?` · ${money(projB)} of ${money(bud)} budget`:' · no revenue budget'}${rv.partial&&rv.unbudgeted?.length?` (${rv.unbudgeted.join(', ')} not budgeted)`:''} · now ${money(rv.now)}${rv.src==='completed'?' completed':''}${!f&&rv.check!=null?` · <span class="chk">3-yr trend ${money(rv.check)}</span>`:''}`,p!=null?trackBadge(p>=100,f):'',null,null,bud?projBar(nowB/bud*100,0,p):'']); }
   else t.push(['Revenue','—','upload revenue or a route report','']);
   return t;
 }
@@ -1316,7 +1336,7 @@ function eoyTiles(k,month){
   const e=k.eoy, y=month.slice(0,4), t=[];
   if(!e) return t;
   if(e.sales!=null){ const p=e.budget?e.sales/e.budget*100:null;
-    t.push([`Sales · FY${y.slice(2)} year end`,p!=null?pct1(p):money(e.sales),`projected ${money(e.sales)}${e.budget?` of ${money(e.budget)} budget`:' · no FY budget'}${e.method==='pace'?' · at this year’s pace (no history)':''}${e.backlogLater>0?` · <span class="pend">incl. ${money(e.backlogLater)} backlog already scheduled for later months</span>`:''}`,p!=null?trendBadge(p>=100):'',null,null,e.budget?projBar((e.ytdNow||0)/e.budget*100,0,p):'']); }
+    t.push([`Sales · FY${y.slice(2)} year end`,p!=null?pct1(p):money(e.sales),`projected ${money(e.sales)}${e.budget?` of ${money(e.budget)} budget`:' · no FY budget'}${e.since&&e.since.slice(5)!=='01'?` · pace since ${esc(monthName(e.since,true))}`:''}${e.check!=null?` · <span class="chk">3-yr trend ${money(e.check)}</span>`:''}${e.backlogLater>0?` · <span class="pend">incl. ${money(e.backlogLater)} backlog already scheduled for later months</span>`:''}`,p!=null?trendBadge(p>=100):'',null,null,e.budget?projBar((e.ytdNow||0)/e.budget*100,0,p):'']); }
   if(e.netUnits!=null) t.push([`Net gain · FY${y.slice(2)} year end`,fmt('netGain',Math.round(e.netUnits)),'projected customers started − cancelled for the year',`<span class="pb ${e.netUnits>=0?'ok':'no'}">${e.netUnits>=0?'GAINING':'SHRINKING'}</span>`]);
   if(e.bv!=null) t.push([`Business valuation · Dec 31`,money(e.bv),`projected · ${fmt('netGainVal',e.bv-(k.bv?.proj??e.bv))} after this month`,`<span class="pb ${e.bv>=(k.bv?.start??e.bv)?'ok':'no'}">${e.bv>=(k.bv?.start??e.bv)?'GROWING':'SHRINKING'}</span>`]);
   return t;
@@ -1354,16 +1374,16 @@ function renderDistrict(c){
     <h3 class="dh">Month end</h3>
     ${kpiStrip(kpiTiles(T),'district')}
     ${T.eoy?`<h3 class="dh">Year end</h3>${kpiStrip(eoyTiles(T,m),'district').replace(/<\/div>$/,growthTile(T.growth,m)+'</div>')}`:''}
-    <p class="periodline">${esc(CFG.district.name)} · ${esc(monthName(m))} · ${T.final?'final month-end numbers':`projections blend the current pace with each branch’s last 3 years${asOf?`, data through ${esc(new Date(asOf+'T12:00').toLocaleDateString(undefined,{month:'short',day:'numeric'}))}`:''} · ${Math.round(T.el*workdays)} of ${workdays} workdays`}</p>
+    <p class="periodline">${esc(CFG.district.name)} · ${esc(monthName(m))} · ${T.final?'final month-end numbers':`projections at the current pace (so far ÷ workdays complete × workdays in the month)${asOf?`, data through ${esc(new Date(asOf+'T12:00').toLocaleDateString(undefined,{month:'short',day:'numeric'}))}`:''} · ${Math.round(T.el*workdays)} of ${workdays} workdays`}</p>
     ${lines.length?bill(esc(lines.join('; ')+'.'),'Bullseye Bill’s district read'):''}
     <div class="dgrid">${rows.map(r=>`<section class="dcard">
       <header><h2>${esc(r.name)} <span class="sub">${esc(r.code)}</span></h2><a class="more" href="../${esc(r.slug)}/">Open board ›</a></header>
       ${r.el==null?'<p class="sub">No numbers for this month yet.</p>':`<div class="mtiles">${[...kpiTiles(r),...eoyTiles(r,m)].map(([l,v,sub,badge,_l,_c,bar])=>`<div class="mt ${badge&&badge.includes('pb no')?'off':badge?'onp':''}"><span class="l">${esc(l)}</span><span class="v">${v}</span>${bar||''}${badge||''}<span class="s">${sub}</span></div>`).join('')}${r.eoy?growthTile(r.growth,m,true):''}</div>`}
     </section>`).join('')}</div>
     <details class="foot"><summary>How projections work</summary><div class="srcs sub">
-      <span>Month end: what’s in so far, plus the rest of the month at the pace each branch’s last 3 years say to expect for that month (scaled to how this year is running). Early in the month that leans on history; by the last week it’s almost all actual. Workdays follow the company’s working-day counts from the FY budget plan. Route completion and voids use the current pace; voided orders stay in total stops, so projected completion can never pass 100% minus the projected void rate. Closed months show final numbers.</span>
+      <span>Month end: so far ÷ workdays complete × workdays in the month (the company’s working-day counts). Sales never project below completed + pending backlog. The “3-yr trend” figure is a cross-check: what the preceding years’ average for that month says it would come to. Workdays follow the company’s working-day counts from the FY budget plan. Route completion and voids use the current pace; voided orders stay in total stops, so projected completion can never pass 100% minus the projected void rate. Closed months show final numbers.</span>
       <span>Backlog: sales already written but not completed, counted in the totals and drawn dashed, because a customer can still back out or the work can slip into next month. This month’s work dates count toward the month (the month can’t project below completed + pending); later work dates set a floor for those months in the year-end projection.</span>
-      <span>Year end: actual closed months, plus this month’s projection, plus each remaining month on the same 3-year trend; compared with the FY budget plan. Branches without history use this year’s pace.</span>
+      <span>Year end: year to date ÷ workdays complete this year × workdays in the year, against the FY budget plan. A branch that joined mid-year starts its pace at its first full month. Growth compares with last year; a branch without a prior year (PXW) compares this month’s daily pace with its first full month until a year has built up.</span>
       <span>Sales: captured sales from Sales Details vs. the DOR sales budget. Route completion: completed vs. every order on the route completion report. Cancel %: annual $ cancelled ÷ the active book (company Net Gain method). Void %: voided orders ÷ total orders. Net gain: recurring $ started − $ cancelled.</span>
       <span>Revenue: invoiced revenue this month (revenue upload; completed $ from the route report when there isn’t one), projected to month end on the same 3-year trend, against the revenue budget in the FY budget plan.</span>
       <span>Business valuation (year end): the BV export’s beginning annual BV (or the customer list’s active annual $ when no BV is loaded), plus projected net gain.</span></div></details>`;
