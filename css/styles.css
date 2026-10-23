@@ -344,3 +344,4 @@ h3.dh{margin:18px 0 0;font-size:1.15rem;color:var(--muted)}
 .kpi.off .kbr,.mt.off .kbr{background:rgba(200,55,45,.25)}
 .gaxis{margin-top:-4px}
 .gax{display:flex;justify-content:space-between;font-size:.7rem;color:#5F665C}
+.chk{color:#5F665C;font-style:italic;white-space:normal}
